@@ -2,7 +2,7 @@
 
 ### A lightweight, fluent, type-aware processing framework for QGIS map layers.  
   
-This module provides a unified, fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live Qgs object or the pointer a string!  
+This module provides a unified, fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live Qgs object or the pointer string!  
   
 **Wrapper Classes:**  
   
