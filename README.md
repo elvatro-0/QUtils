@@ -75,6 +75,7 @@ class Example(QgsProcessingAlgorithm):
 
         Rasterised = dissolved.RingBuffer(1000, 10).Rasterise("CLASS")
         #Seamless chaining into Raster methods
+        #Each time a process algorithm is run, it returns a new Processing object. This allows the use of objects prior to previous processes
 
 
         Rasterised.addLayerToLoadOnCompletion("Output_Raster")
