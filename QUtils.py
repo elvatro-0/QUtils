@@ -226,7 +226,25 @@ class RasterProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
+    def Vectorise(self, Raster_Band: int = 1, Field_Name: str = 'VALUE', Output="TEMPORARY_OUTPUT"):
+        """
+        Native Raster pixels to polygons Process
+        """
+        _output = self._raster.ProcessingOutput(
+            processing.run(
+                "native:pixelstopolygons", {
+                    'INPUT_RASTER': str(self._raster),
+                    'RASTER_BAND': Raster_Band,
+                    'FIELD_NAME': Field_Name,
+                    'OUTPUT': Output
+                },
+                is_child_algorithm=True,
+                context=self._context,
+                feedback=self._feedback
+            )
+        )
 
+        return VectorProcessing(_output, self._context, self._feedback)
 
 
     def __getattr__(self, name):
