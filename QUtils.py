@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 class FlexibleMapLayer:
     def __init__(self, Input_Pointer: str, context: QgsProcessingContext):
         if not isinstance(Input_Pointer, str):
-            raise TypeError("FlexibleMapLayer Recieved Live Qgs Object - Requires Pointer String")
+            raise TypeError("FlexibleMapLayer Received Live Qgs Object - Requires Pointer String")
         self._pointer = Input_Pointer
         self._context = context
 
