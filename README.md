@@ -1,2 +1,2 @@
-QGIS Utilits Module.
+QGIS Utility Module.
 cool stuff and things
