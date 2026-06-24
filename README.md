@@ -1,23 +1,23 @@
 ##QGIS Utility Module.
 
-###A lightweight, fluent, type-aware processing framework for QGIS map layers.
-This module provides a unified, fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live Qgs object or the pointer a string!
-
-**Wrapper Classes:**
-
-FlexibleMapLayer - Creates objects that act as both QGIS layer pointer strings and live QgsMapLayer objects.
-Used as a proxy wrapper for the Processing classes, but, can also be used standalone.
-***requires pointer string as input***
-
-BaseLayerProcesser - Proxy Wrapper for the Processing classes handling context, feedback, processing.run() output extraction, and load on completion behaviour.
-
-Processing API wrappers - providing easy, seamless chaining of native and custom processing algorithms, including layer type conversion.
-The run method allows any processing algorithm not already implemented within its given Processing class to be easily added in script or in the module itself as its algorithm name and parameter dictionary. Context, feedback, and correct output object return is handled by the method.
-**Current Layer implementations:**
-- QgsVectorLayers via VectorProcessing
-- QgsRasterLayers via RasterProcessing
-***requires pointer string as input***
-
+###A lightweight, fluent, type-aware processing framework for QGIS map layers. \n
+This module provides a unified, fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live Qgs object or the pointer a string! \n
+\n
+**Wrapper Classes:** \n
+\n
+FlexibleMapLayer - Creates objects that act as both QGIS layer pointer strings and live QgsMapLayer objects. \n
+Used as a proxy wrapper for the Processing classes, but, can also be used standalone. \n
+***requires pointer string as input*** \n
+\n
+BaseLayerProcesser - Proxy Wrapper for the Processing classes handling context, feedback, processing.run() output extraction, and load on completion behaviour. \n
+\n
+Processing API wrappers - providing easy, seamless chaining of native and custom processing algorithms, including layer type conversion. \n
+The run method allows any processing algorithm not already implemented within its given Processing class to be easily added in script or in the module itself as its algorithm name and parameter dictionary. Context, feedback, and correct output object return is handled by the method. \n
+**Current Layer implementations:** \n
+- QgsVectorLayers via VectorProcessing \n
+- QgsRasterLayers via RasterProcessing \n
+***requires pointer string as input*** \n
+\n
 ```python
 from qgis.core import (
     QgsProcessingAlgorithm,
