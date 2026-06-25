@@ -11,7 +11,8 @@ from qgis.core import(
     QgsProcessingAlgorithm,
     QgsMapLayer,
     QgsFields,
-    QgsRasterLayer
+    QgsRasterLayer,
+    QgsCoordinateReferenceSystem
 )
 from qgis import processing
 from typing import TYPE_CHECKING
@@ -122,6 +123,17 @@ class VectorProcessing(BaseLayerProcesser):
                 'OUTPUT': Output
             }
         )
+    def Smooth(self, Iterations:int = 1, Offset: float = 0.25, Max_Angle: float = 180, Output="TEMPORARY_OUTPUT"):
+        return self.run(
+            "native:smoothgeometry", {
+                'INPUT':self._vector,
+                'ITERATIONS':Iterations,
+                'OFFSET':Offset,
+                'MAX_ANGLE':Max_Angle,
+                'OUTPUT':Output
+            }
+        )
+
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
@@ -185,6 +197,16 @@ class VectorProcessing(BaseLayerProcesser):
 
         return RasterProcessing(_output, self._context, self._feedback)
 
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>  Vector to Feature Conversion  <<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def VectorToFeature(self):
+        featurelist = []
+        for f in self._vector.getFeatures():
+            featurelist.append(f)
+        
+        return FeatureProcessing(featurelist, self._vector.crs(), self._context, self._feedback)
+
 
     def __getattr__(self, name):
         return getattr(self._vector, name)
@@ -195,6 +217,31 @@ if TYPE_CHECKING:
     class VectorProcessing(VectorProcessing_Buffer, QgsMapLayer, QgsVectorLayer):
         pass
 
+class FeatureProcessing:
+    def __init__(self, Input_Features: list[QgsFeature], CRS, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+        if not isinstance(Input_Features[0], QgsFeature):
+            raise TypeError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects")
+        self._crs = CRS
+        self._context = context
+        self._feedback = feedback
+        self.featurelist = Input_Features
+        self._feature = self.featurelist[0]
+
+    def FeaturesToLayer(self, slice: int | slice = None):
+        sink, _id = QgsProcessingUtils.createFeatureSink("LAYER", self._context, self._feature.fields(), self._feature.geometry().wkbType(), self._crs)
+        if slice != None:
+            sink.addFeatures(self.featurelist[slice])
+        else:
+            sink.addFeatures(self.featurelist)
+            
+        return VectorProcessing(_id, self._context, self._feedback)
+    
+class FeatureProcessing_Buffer(FeatureProcessing):
+    pass
+
+if TYPE_CHECKING:
+    class FeatureProcessing(FeatureProcessing_Buffer, QgsFeature):
+        pass
 
 
 class RasterProcessing(BaseLayerProcesser):
@@ -220,8 +267,47 @@ class RasterProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-
-
+    def ClipRasterByMaskLayer(self, Mask:str, Source_CRS:QgsCoordinateReferenceSystem = None, Target_CRS:QgsCoordinateReferenceSystem = None, Target_Extent:str = None, NoData:float = None, Alpha_Band:bool = False, Crop_To_Cutline:bool = True, Keep_Resolution:bool = False, Set_Resolution:bool = False, X_Resolution:float = None, Y_Resolution:float = None, Multithreading:bool = False, Creation_Options:str = None, Data_Type:int = 0, Extra='', Output = "TEMPORARY_OUTPUT"):
+        """
+        GDAL Clip raster by mask layer process
+        """
+        return self.run(
+            "gdal:cliprasterbymasklayer", {
+                'INPUT': str(self._raster),
+                'MASK': Mask,
+                'SOURCE_CRS':Source_CRS,
+                'TARGET_CRS':Target_CRS,
+                'TARGET_EXTENT':Target_Extent,
+                'NODATA':NoData,
+                'ALPHA_BAND':Alpha_Band,
+                'CROP_TO_CUTLINE':Crop_To_Cutline,
+                'KEEP_RESOLUTION':Keep_Resolution,
+                'SET_RESOLUTION':Set_Resolution,
+                'X_RESOLUTION':X_Resolution,
+                'Y_RESOLUTION':Y_Resolution,
+                'MULTITHREADING':Multithreading,
+                'CREATION_OPTIONS':Creation_Options,
+                'DATA_TYPE':Data_Type,
+                'EXTRA':Extra,
+                'OUTPUT':Output
+            }
+        )
+    def ClipRasterByExtent(self, Clipping_Extent:str, OverrideCRS:bool = False, NoData:float = 0, Creation_Options:str = None, Data_Type:int = 0, Extra='', Output="TEMPORARY_OUTPUT"):
+        """
+        GDAL Clip raster by extent process
+        """
+        return self.run(
+            "gdal:cliprasterbyextent", {
+                'INPUT':str(self._raster),
+                'PROJWIN':Clipping_Extent,
+                'OVERCRS':OverrideCRS,
+                'NODATA':NoData,
+                'CREATION_OPTIONS':Creation_Options,
+                'DATA_TYPE':Data_Type,
+                'EXTRA':Extra,
+                'OUTPUT':Output
+            }
+        )
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
@@ -249,8 +335,6 @@ class RasterProcessing(BaseLayerProcesser):
 
     def __getattr__(self, name):
         return getattr(self._raster, name)
-
-
 class RasterProcessing_Buffer(RasterProcessing):
     pass
 
