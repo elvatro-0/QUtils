@@ -16,8 +16,86 @@ from qgis.core import(
 )
 from qgis import processing
 from typing import TYPE_CHECKING
+import sys
+
+#========================================================================================================#
+#----------------------------------------------Functions-------------------------------------------------#
+#===============================================>      <=================================================#
+
+def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int]] = None):
+    """
+    
+    """
+    _featurenumber = []
+    if Slice == None:
+        for ix, f in enumerate(List):
+            _featurenumber.append(ix)
+        _except = []
+    elif isinstance(Slice, tuple) and len(Slice) == 3:
+        _include, _range, _except = Slice
+        
+        #=====Include=====#
+        if _include == None:
+            pass
+        elif isinstance(_include, list) and len(_include) > 0 and max(_include) <= len(List) - 1:
+            _featurenumber.extend(_include)
+        elif len(_include) < 0 or max(_include) >= len(List):
+            feedback.reportError("slice error: first object contains int lower then 0 or higher then the max feature id.", True)
+            sys.exit()
+        else:
+            feedback.reportError("slice error: First object must be list.", True)
+            sys.exit()
+        
+        #=====Range======#
+        if _range == None:
+            pass
+        elif (isinstance(_range, tuple) and len(_range) == 2) or isinstance(_range, list):
+            _range = [_range] if isinstance(_range, tuple) else _range
+            if not isinstance(_range[0], tuple) or len(_range[0]) != 2:
+                feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuple.", True)
+                sys.exit()
+            for start, stop in _range:
+                if stop > len(List) - 1:
+                    feedback.reportError("slice error: second object end int is higher then the max feature id.", True)
+                    sys.exit()
+                if start > stop:
+                    feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuple. The first value must be less then the second value.", True)
+                    sys.exit()
+                start = 0 if start == None else start
+                stop = len(List) - 1 if stop == None else stop
+                _featurenumber.extend([r for r in range(start, stop + 1)])
+        else:
+            feedback.reportError("slice error: second object must be tuple containing a range of two values. None as first or second value evaluates as either highest or lowest value.", True)
+            sys.exit()
+
+        #=====Except=====#
+        if _except == None:
+            _except = []
+        elif isinstance(_except, list) and len(_except) > 0 and max(_except) <= len(List) - 1:
+            pass
+        else:
+            feedback.reportError("slice error: third object must be None or list of ints", True)
+            sys.exit()
+        
+    else:
+        for ix, _ in enumerate(List):
+            _featurenumber.append(ix)
+        feedback.pushWarning("slice error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire QgsFeature list.")
+
+    check_featurenumber = []
+    for featuren in _featurenumber:
+        if featuren not in check_featurenumber and featuren not in _except:
+            check_featurenumber.append(featuren)
+    
+    _returnList = []
+    for n in sorted(check_featurenumber):
+        _returnList.append(List[n])
+    return _returnList
 
 
+#========================================================================================================#
+#------------------------------------------Proxy Base Wrappers-------------------------------------------#
+#===============================================>      <=================================================#
 
 class FlexibleMapLayer:
     def __init__(self, Input_Pointer: str, context: QgsProcessingContext):
@@ -123,10 +201,13 @@ class VectorProcessing(BaseLayerProcesser):
                 'OUTPUT': Output
             }
         )
-    def Smooth(self, Iterations:int = 1, Offset: float = 0.25, Max_Angle: float = 180, Output="TEMPORARY_OUTPUT"):
+    def Smooth(self, Iterations:int = 1, Offset: float = 0.5, Max_Angle: float = 180, Output="TEMPORARY_OUTPUT"):
+        """
+        Native Smooth geometry process
+        """
         return self.run(
             "native:smoothgeometry", {
-                'INPUT':self._vector,
+                'INPUT':str(self._vector),
                 'ITERATIONS':Iterations,
                 'OFFSET':Offset,
                 'MAX_ANGLE':Max_Angle,
@@ -168,7 +249,7 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     def Rasterise(self, Field:str, Burn:float = 0, Use_Z:bool = False, Units:int = 1, Width:float = 30, Height:float = 30, Extent:str = None, NoData:float = 0, Creation_Options:str = None, Data_Type:int = 5, Init:float = None, Invert:bool = False, Extra:str = '', Output = "TEMPORARY_OUTPUT"):
         """
-        gdal rasterize Process
+        GDAL rasterize Process
         """
         _output = self._vector.ProcessingOutput(
             processing.run(
@@ -207,6 +288,7 @@ class VectorProcessing(BaseLayerProcesser):
         
         return FeatureProcessing(featurelist, self._vector.crs(), self._context, self._feedback)
 
+    #======================================================#
 
     def __getattr__(self, name):
         return getattr(self._vector, name)
@@ -217,25 +299,41 @@ if TYPE_CHECKING:
     class VectorProcessing(VectorProcessing_Buffer, QgsMapLayer, QgsVectorLayer):
         pass
 
+
+#========================================================================================================#
+#-------------------------------------------Feature Processing-------------------------------------------#
+#===============================================>      <=================================================#
+
 class FeatureProcessing:
-    def __init__(self, Input_Features: list[QgsFeature], CRS, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+    """NOTE: When calling QgsFeature methods on a FeatureProcessing object, the method is executed only on the first QgsFeature in the feature list. \n
+    This is useful for broader geometry introspection, but for geometry operations or transformations, iterate through the featurelist attribute."""
+    def __init__(self, Input_Features: list[QgsFeature], CRS: QgsCoordinateReferenceSystem, context: QgsProcessingContext, feedback: QgsProcessingFeedback, LayerID: str = None):
         if not isinstance(Input_Features[0], QgsFeature):
             raise TypeError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects")
+        self._id = LayerID
         self._crs = CRS
         self._context = context
         self._feedback = feedback
         self.featurelist = Input_Features
         self._feature = self.featurelist[0]
+        self._fields = self._feature.fields()
+        self._wkb = self._feature.geometry().wkbType()
 
-    def FeaturesToLayer(self, slice: int | slice = None):
-        sink, _id = QgsProcessingUtils.createFeatureSink("LAYER", self._context, self._feature.fields(), self._feature.geometry().wkbType(), self._crs)
-        if slice != None:
-            sink.addFeatures(self.featurelist[slice])
-        else:
-            sink.addFeatures(self.featurelist)
-            
+    #-------------------------------------------------------#
+    #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
+    #-------------------------------------------------------#
+
+    def FeaturesToLayer(self, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int]] = None):
+        sink, _id = QgsProcessingUtils.createFeatureSink(self._id, self._context, self._fields, self._wkb, self._crs)
+        sink.addFeatures(ListSlicer(self.featurelist, self._feedback, Slice))
+
         return VectorProcessing(_id, self._context, self._feedback)
-    
+
+    #======================================================#
+
+    def __getattr__(self, name):
+        return getattr(self._feature, name)
+
 class FeatureProcessing_Buffer(FeatureProcessing):
     pass
 
@@ -244,8 +342,12 @@ if TYPE_CHECKING:
         pass
 
 
+#========================================================================================================#
+#--------------------------------------------Raster Processing-------------------------------------------#
+#===============================================>      <=================================================#
+
 class RasterProcessing(BaseLayerProcesser):
-    def __init__(self, Input_Raster: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+    def __init__(self, Input_Raster: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback, Name: str = None):
         self._context = context
         self._feedback = feedback
         self._raster = BaseLayerProcesser(Input_Raster, self._context, self._feedback)
@@ -274,7 +376,7 @@ class RasterProcessing(BaseLayerProcesser):
         return self.run(
             "gdal:cliprasterbymasklayer", {
                 'INPUT': str(self._raster),
-                'MASK': Mask,
+                'MASK': str(Mask),
                 'SOURCE_CRS':Source_CRS,
                 'TARGET_CRS':Target_CRS,
                 'TARGET_EXTENT':Target_Extent,
@@ -379,7 +481,7 @@ class Vector_Decoding:
 
         dict_ = {}
         geomTypeList = ["Point", "Line", "Polygon"]
-        dict_["GeometryType"] = geomTypeList[QgsVectorLayer.geometryType(self.Vector_layer)]
+        dict_["GeometryType"] = geomTypeList[self.Vector_layer.geometryType()]
         for i, feature in enumerate(self.Vector_layer.getFeatures()):
             geom = feature.geometry()
             geomType = geom.type()
