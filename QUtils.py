@@ -22,15 +22,31 @@ import sys
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
 
-def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int]] = None):
+def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
     """
-    
+    Applies a three component slicing rule to a list of objects, returning a filtered subset. \n
+    :param List: List of objects to slice.
+    :param feedback: QgsProcessingFeedback object for error and warning reporting.
+    :param Slice: Tuple defining slicing behaviour: \n
+                (Include, Range, Exclude)
+                Include:
+                    - None -> no explicit inclusions
+                    - list[int] -> explicit feature indicies to include \n
+                Range:
+                    - None -> no ranges
+                    - (start, stop) -> range of indices to be included
+                    - list[(start, stop)] -> multiple ranges \n
+                Exclude:
+                    - None -> no explicit exclusions
+                    - list[int] -> explicit indicies to exclude
+                    - list[(start, stop)] -> range if indicies to exclulde (can be multiple ranges)
+    :return: Filtered list of objects
     """
     _featurenumber = []
     if Slice == None:
         for ix, f in enumerate(List):
             _featurenumber.append(ix)
-        _except = []
+        r_except = []
     elif isinstance(Slice, tuple) and len(Slice) == 3:
         _include, _range, _except = Slice
         
@@ -56,7 +72,7 @@ def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[in
                 sys.exit()
             for start, stop in _range:
                 if stop > len(List) - 1:
-                    feedback.reportError("slice error: second object end int is higher then the max feature id.", True)
+                    feedback.reportError("slice error: second object end int is higher then the max feature fid.", True)
                     sys.exit()
                 if start > stop:
                     feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuple. The first value must be less then the second value.", True)
@@ -70,21 +86,33 @@ def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[in
 
         #=====Except=====#
         if _except == None:
-            _except = []
-        elif isinstance(_except, list) and len(_except) > 0 and max(_except) <= len(List) - 1:
-            pass
+            r_except = []
+        elif isinstance(_except, list) and len(_except) > 0:
+            r_except = []
+            for e in _except:
+                if isinstance(e, tuple):
+                    estart, estop = e
+                    r_except.extend([r for r in range(estart, estop + 1)])
+                elif isinstance(e, int):
+                    r_except.append(e)
+                else:
+                    feedback.reportError("slice error: third object must be Noneor list of ints or tuple ranges", True)
+                    sys.exit()
+            if max(r_except) > len(List) - 1:
+                feedback.reportError("slice error: third object max value higher then the max feature fid", True)
+                sys.exit()
         else:
-            feedback.reportError("slice error: third object must be None or list of ints", True)
+            feedback.reportError("slice error: third object must be None or list of ints or tuple ranges", True)
             sys.exit()
         
     else:
         for ix, _ in enumerate(List):
             _featurenumber.append(ix)
-        feedback.pushWarning("slice error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire QgsFeature list.")
+        feedback.pushWarning("slice error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire list.")
 
     check_featurenumber = []
     for featuren in _featurenumber:
-        if featuren not in check_featurenumber and featuren not in _except:
+        if featuren not in check_featurenumber and featuren not in r_except:
             check_featurenumber.append(featuren)
     
     _returnList = []
@@ -141,9 +169,9 @@ class BaseLayerProcesser(FlexibleMapLayer):
 
 #And before you want to write to me, and say I shouldnt inherit twice, read the note
 class VectorProcessing(BaseLayerProcesser):
-    """NOTE: This class inherits from BaseLayerWrapper *only* to preserve type identity 
+    """NOTE: This class inherits from BaseLayerProcesser *only* to preserve type identity 
     so that QGIS and external scripts treat it as a FlexibleMapLayer object. \n
-    All actual layer behaviour is delegated to an internal BaseLayerWrapper instance stored 
+    All actual layer behaviour is delegated to an internal BaseLayerProcessing instance stored 
     in self._vector. This dual structure allows the returned VectorProcessing object to behave 
     as BOTH a pointer string (via __str__) and a live QgsMapLayer (via __getattr__), which is 
     required for seamless use in processing.run() while maintaining VectorProcessing methods for chaining."""
@@ -249,7 +277,24 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     def Rasterise(self, Field:str, Burn:float = 0, Use_Z:bool = False, Units:int = 1, Width:float = 30, Height:float = 30, Extent:str = None, NoData:float = 0, Creation_Options:str = None, Data_Type:int = 5, Init:float = None, Invert:bool = False, Extra:str = '', Output = "TEMPORARY_OUTPUT"):
         """
-        GDAL rasterize Process
+        GDAL rasterize Process \n
+        :param Field: Attribute field used to assign pixel values.
+        :param Burn: Constant value to burn into all pixels.
+        :param Use_Z: Uses Z-values from geometry as pixel values, if True.
+        :param Units: Pixel size units: \n
+                  0 = Georeferenced units per pixel
+                  1 = Pixels per map unit
+        :param Width: Pixel width.
+        :param Height: Pixel height.
+        :param Extent: Extent string "xmin,xmax,ymin,ymax" defining raster bounds. Uses layer extent if None.
+        :param NoData: NoData value assigned to empty pixels.
+        :param Data_Type: Output raster data type: \n
+                      0 = Byte, 1 = Int16, 2 = UInt16, 3 = Int32, 4 = UInt32, 5 = Float32, 6 = Float64
+        :param Init: Initial value for all pixels before burning geometry.
+        :param Invert: inverts the burn mask.
+        :param Extra: Additional GDAL command-line arguments.
+        :param Output: Output file path string | Default Temporary Memory Output
+        :return: RasterProcessing(FlexibleVectorLayer) Object
         """
         _output = self._vector.ProcessingOutput(
             processing.run(
@@ -323,7 +368,7 @@ class FeatureProcessing:
     #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
     #-------------------------------------------------------#
 
-    def FeaturesToLayer(self, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int]] = None):
+    def FeaturesToLayer(self, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
         sink, _id = QgsProcessingUtils.createFeatureSink(self._id, self._context, self._fields, self._wkb, self._crs)
         sink.addFeatures(ListSlicer(self.featurelist, self._feedback, Slice))
 
@@ -371,7 +416,23 @@ class RasterProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     def ClipRasterByMaskLayer(self, Mask:str, Source_CRS:QgsCoordinateReferenceSystem = None, Target_CRS:QgsCoordinateReferenceSystem = None, Target_Extent:str = None, NoData:float = None, Alpha_Band:bool = False, Crop_To_Cutline:bool = True, Keep_Resolution:bool = False, Set_Resolution:bool = False, X_Resolution:float = None, Y_Resolution:float = None, Multithreading:bool = False, Creation_Options:str = None, Data_Type:int = 0, Extra='', Output = "TEMPORARY_OUTPUT"):
         """
-        GDAL Clip raster by mask layer process
+        GDAL Clip raster by mask layer process \n
+        :param Mask: Pointer string of the mask layer (vector or raster).
+        :param Source_CRS: CRS of the input raster. Uses raster CRS if None.
+        :param Target_CRS: CRS of the output raster. Uses raster CRS if None.
+        :param NoData: NoData value assigned to pixels outside the mask.
+        :param Alpha_Band: Adds an alpha band to represent transparency.
+        :param Crop_To_Cutline: Crops output to mask geometry extent.
+        :param Keep_Resolution: Preserves input raster resolution.
+        :param Set_resolution: Forces output resolution using X/Y values.
+        :param X_Resolution: Output pixel width (required if Set_Resolution=True).
+        :param Y_Resolution: Output pixel height (required if Set_Resolution=True).
+        :param Multithreading: Enables GDAL multi-threaded processing.
+        :param Creation_Options: GDAL creation options string.
+        :param Data_Type: Output raster data type (GDAL numeric code).
+        :param Extra: Additional GDAL command-line arguments.
+        :param Output: Output file path string | Default Temporary Memory Output.
+        :return: RasterProcessing(FlexibleRasterLayer) object.
         """
         return self.run(
             "gdal:cliprasterbymasklayer", {
@@ -396,7 +457,15 @@ class RasterProcessing(BaseLayerProcesser):
         )
     def ClipRasterByExtent(self, Clipping_Extent:str, OverrideCRS:bool = False, NoData:float = 0, Creation_Options:str = None, Data_Type:int = 0, Extra='', Output="TEMPORARY_OUTPUT"):
         """
-        GDAL Clip raster by extent process
+        GDAL Clip raster by extent process \n
+        :param Clipping_Extent: Extent string "xmin,xmax,ymin,ymax" defining the output raster bounds.
+        :param OverrideCRS: Treats extent as being within the rasters CRS.
+        :param NoData: NoData value assigned to pixels outside the extent.
+        :param Creation_Options: GDAL creation options string.
+        :param Data_Type: Output raster data type (GDAL numeric code).
+        :param Extra: Additional GDAL command-line arguments.
+        :param Output: Output file path string | Default Temporary Memory Output.
+        :return: RasterProcessing(FlexibleRasterLayer) object.
         """
         return self.run(
             "gdal:cliprasterbyextent", {
@@ -416,7 +485,11 @@ class RasterProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     def Vectorise(self, Raster_Band: int = 1, Field_Name: str = 'VALUE', Output="TEMPORARY_OUTPUT"):
         """
-        Native Raster pixels to polygons Process
+        Native Raster pixels to polygons Process \n
+        :param Raster_Band: Raster band index to convert.
+        :param Field_Name: Attribute field name storing pixel values.
+        :param Output: Output file path string | Default Temporary Memory Output.
+        :return: VectorProcessing(FlexibleVectorLayer) object.
         """
         _output = self._raster.ProcessingOutput(
             processing.run(
