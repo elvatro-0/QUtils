@@ -12,13 +12,15 @@ Used as a proxy wrapper for the Processing classes, but, can also be used standa
   
 **BaseLayerProcesser** - Proxy Wrapper for the Processing classes handling context, feedback, processing.run() output extraction, and load on completion behaviour.  
   
-Processing API wrappers - providing easy, seamless chaining of native and custom processing algorithms, including layer type conversion.  
+**Processing API wrappers** - providing easy, seamless chaining of native and custom processing algorithms, including layer type conversion.  
 The run method allows any processing algorithm not already implemented within its given Processing class to be easily added in script or in the module itself as its algorithm name and parameter dictionary. Context, feedback, and correct output object return is handled by the method.  
 **Current Layer implementations:**  
 - QgsVectorLayers via **VectorProcessing**
 - QgsRasterLayers via **RasterProcessing**  
 ***requires pointer string as input***  
-
+  
+**FeatureProcessing** - Wrapper for working directly with QgsFeature object lists, providing feature-level introspection and back chaining conversion into a vector layer (VectorProcessingObject). VectorProcessing contains a method of converting into QgsFeature object list to support chaining.  
+***requires list of QgsFeature objects as input***
 
 _Example Script:_
 ```python
