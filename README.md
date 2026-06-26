@@ -19,7 +19,7 @@ The run method allows any processing algorithm not already implemented within it
 - QgsRasterLayers via **RasterProcessing**  
 ***requires pointer string as input***  
   
-**FeatureProcessing** - Wrapper for working directly with QgsFeature object lists, providing feature-level introspection and back chaining conversion into a vector layer (VectorProcessingObject). VectorProcessing contains a method of converting into QgsFeature object list to support chaining.  
+**FeatureProcessing** - Wrapper for working directly with QgsFeature object lists, providing feature-level introspection and back chaining conversion into a vector layer (VectorProcessing object). VectorProcessing contains a method of converting into QgsFeature object list to support chaining.  
 ***requires list of QgsFeature objects as input***
 
 _Example Script:_
