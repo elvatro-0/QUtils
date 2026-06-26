@@ -372,6 +372,7 @@ class FeatureProcessing:
         sink, _id = QgsProcessingUtils.createFeatureSink(self._id, self._context, self._fields, self._wkb, self._crs)
         sink.addFeatures(ListSlicer(self.featurelist, self._feedback, Slice))
 
+        self._feedback.pushDebugInfo(f"Result: FeaturesToLayer_{_id}")
         return VectorProcessing(_id, self._context, self._feedback)
 
     #======================================================#
