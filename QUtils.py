@@ -12,7 +12,9 @@ from qgis.core import(
     QgsMapLayer,
     QgsFields,
     QgsRasterLayer,
-    QgsCoordinateReferenceSystem
+    QgsCoordinateReferenceSystem,
+    QgsFeatureIterator,
+    QgsFeatureRequest
 )
 from qgis import processing
 from typing import TYPE_CHECKING
@@ -22,10 +24,11 @@ import sys
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
 
-def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
+def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
     """
-    Applies a three component slicing rule to a list of objects, returning a filtered subset. \n
-    :param List: List of objects to slice.
+    Applies a three component slicing rule to a list of objects or QgsFeatureIterator, returning a filtered List or QgsFeatureIterator. \n
+    *because the native slice is a bit rubbish* \n
+    :param List: List of objects to slice (supports QgsFeatureIterator).
     :param feedback: QgsProcessingFeedback object for error and warning reporting.
     :param Slice: Tuple defining slicing behaviour: \n
                 (Include, Range, Exclude)
@@ -35,28 +38,45 @@ def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[in
                 Range:
                     - None -> no ranges
                     - (start, stop) -> range of indices to be included
-                    - list[(start, stop)] -> multiple ranges \n
+                    - list[(start, stop)] -> multiple ranges
+                    - single int within a range defaults as the start, stop defaults as None
+                    - start as None defaults as 0, stop as None defaults as object count
                 Exclude:
                     - None -> no explicit exclusions
                     - list[int] -> explicit indicies to exclude
                     - list[(start, stop)] -> range if indicies to exclulde (can be multiple ranges)
-    :return: Filtered list of objects
+    :return: Filtered list of objects or QgsFeatureIterator
     """
-    _featurenumber = []
-    if Slice == None:
-        for ix, f in enumerate(List):
-            _featurenumber.append(ix)
-        r_except = []
-    elif isinstance(Slice, tuple) and len(Slice) == 3:
+
+    if isinstance(List, list):
+        _count = len(List)
+    if isinstance(List, QgsFeatureIterator):
+        if context != None:
+            first = next(List)
+            List.rewind()
+            geomlist = ["MultiPoint", "MultiPolyline", "MultiPolygon"] if first.geometry().isMultipart() else ["Point", "Line", "Polygon"]
+            c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[first.geometry().type()], "_ListSlicer_TEMP_LAYER_", "memory"))
+            c_layer.startEditing()
+            c_layer.dataProvider().addAttributes(first.fields())
+            c_layer.dataProvider().addFeatures(List)
+            c_layer.commitChanges()
+            _count = c_layer.featureCount()
+        else:
+            feedback.reportError("Context required for QgsFeatureIterator input")
+            sys.exit()
+
+
+    _includeList = []
+    if isinstance(Slice, tuple) and len(Slice) == 3:
         _include, _range, _except = Slice
         
         #=====Include=====#
         if _include == None:
             pass
-        elif isinstance(_include, list) and len(_include) > 0 and max(_include) <= len(List) - 1:
-            _featurenumber.extend(_include)
-        elif len(_include) < 0 or max(_include) >= len(List):
-            feedback.reportError("slice error: first object contains int lower then 0 or higher then the max feature id.", True)
+        elif isinstance(_include, list) and max(_include) <= _count - 1:
+            _includeList.extend(_include)
+        elif _count - 1 < max(_include):
+            feedback.reportError(f"slice error: first object contains int higher then the number of objects. Object Count: {_count}", True)
             sys.exit()
         else:
             feedback.reportError("slice error: First object must be list.", True)
@@ -65,61 +85,74 @@ def ListSlicer(List: list, feedback: QgsProcessingFeedback, Slice: tuple[list[in
         #=====Range======#
         if _range == None:
             pass
-        elif (isinstance(_range, tuple) and len(_range) == 2) or isinstance(_range, list):
+        elif (isinstance(_range, tuple) and len(_range) <= 2) or isinstance(_range, list):
             _range = [_range] if isinstance(_range, tuple) else _range
-            if not isinstance(_range[0], tuple) or len(_range[0]) != 2:
-                feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuple.", True)
-                sys.exit()
-            for start, stop in _range:
-                if stop > len(List) - 1:
-                    feedback.reportError("slice error: second object end int is higher then the max feature fid.", True)
+            del_range_list = []
+            for ind_range in _range:
+                if not isinstance(ind_range, tuple) or len(ind_range) > 2:
+                    feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuples.", True)
                     sys.exit()
+                if len(ind_range) == 1:
+                    _range.append((max(ind_range), None))
+                    del_range_list.append(ind_range)
+            for del_r in del_range_list:
+                _range.remove(del_r)
+            for start, stop in _range:
+                start = 0 if start == None else start
+                stop = _count - 1 if stop == None or stop > _count - 1 else stop
                 if start > stop:
                     feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuple. The first value must be less then the second value.", True)
                     sys.exit()
-                start = 0 if start == None else start
-                stop = len(List) - 1 if stop == None else stop
-                _featurenumber.extend([r for r in range(start, stop + 1)])
+                _includeList.extend([r for r in range(start, stop + 1)])
         else:
-            feedback.reportError("slice error: second object must be tuple containing a range of two values. None as first or second value evaluates as either highest or lowest value.", True)
+            feedback.reportError("slice error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.", True)
             sys.exit()
 
         #=====Except=====#
+        r_except = []
         if _except == None:
-            r_except = []
+            pass
         elif isinstance(_except, list) and len(_except) > 0:
-            r_except = []
-            for e in _except:
-                if isinstance(e, tuple):
-                    estart, estop = e
+            for ind_except in _except:
+                if isinstance(ind_except, tuple):
+                    ind_except = (max(ind_except), None) if len(ind_except) == 1 else ind_except
+                    estart, estop = ind_except
+                    estart = 0 if start == None else estart
+                    estop = _count - 1 if estop == None or estop > _count - 1 else estop
                     r_except.extend([r for r in range(estart, estop + 1)])
-                elif isinstance(e, int):
-                    r_except.append(e)
+                elif isinstance(ind_except, int):
+                    r_except.append(ind_except)
                 else:
                     feedback.reportError("slice error: third object must be Noneor list of ints or tuple ranges", True)
                     sys.exit()
-            if max(r_except) > len(List) - 1:
-                feedback.reportError("slice error: third object max value higher then the max feature fid", True)
+            if max(r_except) > _count - 1:
+                feedback.reportError("slice error: third object max value higher then the number of objects.", True)
                 sys.exit()
         else:
             feedback.reportError("slice error: third object must be None or list of ints or tuple ranges", True)
             sys.exit()
         
     else:
-        for ix, _ in enumerate(List):
-            _featurenumber.append(ix)
+        _includeList.extend([r for r in range(estart, _count)])
         feedback.pushWarning("slice error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire list.")
 
     check_featurenumber = []
-    for featuren in _featurenumber:
+    check_featurenumber_1based = []
+    for featuren in _includeList:
         if featuren not in check_featurenumber and featuren not in r_except:
             check_featurenumber.append(featuren)
-    
-    _returnList = []
-    for n in sorted(check_featurenumber):
-        _returnList.append(List[n])
-    return _returnList
+            check_featurenumber_1based.append(featuren + 1)
+    filterList = sorted(check_featurenumber)
 
+    if isinstance(List, list):
+        _returnList = []
+        for n in filterList:
+            _returnList.append(List[n])
+        return _returnList
+
+    if isinstance(List, QgsFeatureIterator):
+        filterList = sorted(check_featurenumber_1based)
+        return c_layer.getFeatures(QgsFeatureRequest().setFilterFids(filterList))
 
 #========================================================================================================#
 #------------------------------------------Proxy Base Wrappers-------------------------------------------#
@@ -327,11 +360,7 @@ class VectorProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>  Vector to Feature Conversion  <<<<<<<<<<<<#
     #-------------------------------------------------------#
     def VectorToFeature(self):
-        featurelist = []
-        for f in self._vector.getFeatures():
-            featurelist.append(f)
-        
-        return FeatureProcessing(featurelist, self._vector.crs(), self._context, self._feedback)
+        return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback)
 
     #======================================================#
 
@@ -350,36 +379,39 @@ if TYPE_CHECKING:
 #===============================================>      <=================================================#
 
 class FeatureProcessing:
-    """NOTE: When calling QgsFeature methods on a FeatureProcessing object, the method is executed only on the first QgsFeature in the feature list. \n
+    """NOTE: When calling QgsFeature methods on a FeatureProcessing object, the method is executed *only* on the first QgsFeature in the feature list/iterator. \n
     This is useful for broader geometry introspection, but for geometry operations or transformations, iterate through the featurelist attribute."""
-    def __init__(self, Input_Features: list[QgsFeature], CRS: QgsCoordinateReferenceSystem, context: QgsProcessingContext, feedback: QgsProcessingFeedback, LayerID: str = None):
-        if not isinstance(Input_Features[0], QgsFeature):
-            raise TypeError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects")
-        self._id = LayerID
-        self._crs = CRS
+    def __init__(self, Input_Features: list[QgsFeature] | QgsFeatureIterator, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+        #if (isinstance(Input_Features, list) and not isinstance(Input_Features[0], QgsFeature)) or not isinstance(Input_Features, QgsFeatureIterator):
+        #    raise TypeError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects or QgsFeatureIterator as input")
         self._context = context
         self._feedback = feedback
         self.featurelist = Input_Features
-        self._feature = self.featurelist[0]
-        self._fields = self._feature.fields()
-        self._wkb = self._feature.geometry().wkbType()
+        if isinstance(Input_Features, list):
+            self._feature = self.featurelist[0]
+        if isinstance(Input_Features, QgsFeatureIterator):
+            self._feature = next(self.featurelist)
+            self.featurelist.rewind()
 
     #-------------------------------------------------------#
     #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
     #-------------------------------------------------------#
 
     def FeaturesToLayer(self, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
-        sink, _id = QgsProcessingUtils.createFeatureSink(self._id, self._context, self._fields, self._wkb, self._crs)
-        sink.addFeatures(ListSlicer(self.featurelist, self._feedback, Slice))
+        geomlist = ["MultiPoint", "MultiPolyline", "MultiPolygon"] if self._feature.geometry().isMultipart() else ["Point", "Line", "Polygon"]
+        _layer = self._context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[self._feature.geometry().type()], "_ListSlicer_TEMP_LAYER_", "memory"))
+        _layer.startEditing()
+        _layer.dataProvider().addAttributes(self._feature.fields())
+        _layer.dataProvider().addFeatures(ListSlicer(self.featurelist, Slice, self._feedback, self._context))
+        _layer.commitChanges()
 
-        self._feedback.pushDebugInfo(f"Result: FeaturesToLayer_{_id}")
-        return VectorProcessing(_id, self._context, self._feedback)
+        self._feedback.pushCommandInfo(f"Result: FeaturesToLayer_{_layer.id()}")
+        return VectorProcessing(_layer.id(), self._context, self._feedback)
 
     #======================================================#
 
     def __getattr__(self, name):
         return getattr(self._feature, name)
-
 class FeatureProcessing_Buffer(FeatureProcessing):
     pass
 
@@ -634,7 +666,7 @@ class Vector_Decoding:
                                 }
             else:
                 continue
-
+ 
             FeatureNumber = f"Feature{i}"
             dict_[FeatureNumber] = geomdict
 
