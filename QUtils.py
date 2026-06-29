@@ -14,16 +14,50 @@ from qgis.core import(
     QgsRasterLayer,
     QgsCoordinateReferenceSystem,
     QgsFeatureIterator,
-    QgsFeatureRequest
+    QgsFeatureRequest,
+    QgsProcessingException
 )
 from qgis import processing
 from typing import TYPE_CHECKING
-import sys
+import functools, inspect, traceback 
+
+#========================================================================================================#
+#----------------------------------------------Error Handler---------------------------------------------#
+#===============================================>      <=================================================#
+
+class QUtilsExceptions(Exception):
+    def __init__(self, message: str = None):
+        super().__init__(message)
+        self.message = "" if message == None else message
+    def CriticalError(message: str):
+        raise QUtilsExceptions(message)
+
+    def ErrorHandling(func):
+        @functools.wraps(func)
+        def stack_tracer(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as _except:
+                feedback = None
+                for fb in inspect.signature(func).bind(*args, **kwargs).arguments.values():
+                    if isinstance(fb, QgsProcessingFeedback):
+                        feedback = fb
+                        break
+
+                feedback.reportError(
+                f"\n QUtils Critical Error\n"
+                f"{'='*50}\n"
+                f"STACK TRACE:\n{"".join(traceback.format_list(traceback.extract_stack()[:-1]))}\n"
+                f"{'='*50}"
+                ) if feedback != None else None
+                raise QgsProcessingException(f"\n{_except.message}\n") from None
+        return stack_tracer
+
 
 #========================================================================================================#
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
-
+@QUtilsExceptions.ErrorHandling
 def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
     """
     Applies a three component slicing rule to a list of objects or QgsFeatureIterator, returning a filtered List or QgsFeatureIterator. \n
@@ -48,6 +82,8 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
     :return: Filtered list of objects or QgsFeatureIterator
     """
 
+    if Slice == None:
+        return List
     if isinstance(List, list):
         _count = len(List)
     if isinstance(List, QgsFeatureIterator):
@@ -55,15 +91,15 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
             first = next(List)
             List.rewind()
             geomlist = ["MultiPoint", "MultiPolyline", "MultiPolygon"] if first.geometry().isMultipart() else ["Point", "Line", "Polygon"]
-            c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[first.geometry().type()], "_ListSlicer_TEMP_LAYER_", "memory"))
+            c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[first.geometry().type()], "_ListSlicer_MEM_LAYER_", "memory"))
             c_layer.startEditing()
+            c_layer.setCrs(context.project().crs())
             c_layer.dataProvider().addAttributes(first.fields())
             c_layer.dataProvider().addFeatures(List)
             c_layer.commitChanges()
             _count = c_layer.featureCount()
         else:
-            feedback.reportError("Context required for QgsFeatureIterator input")
-            sys.exit()
+            QUtilsExceptions.CriticalError("Slice Error: Context required for QgsFeatureIterator input")
 
 
     _includeList = []
@@ -73,14 +109,13 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
         #=====Include=====#
         if _include == None:
             pass
-        elif isinstance(_include, list) and max(_include) <= _count - 1:
+        elif isinstance(_include, list) and max(_include):
+            if _count - 1 < max(_include):
+                QUtilsExceptions.CriticalError(f"Slice Error: first object contains int higher then the number of objects. Max int: {max(_include)} Object Count: {_count}")
             _includeList.extend(_include)
-        elif _count - 1 < max(_include):
-            feedback.reportError(f"slice error: first object contains int higher then the number of objects. Object Count: {_count}", True)
-            sys.exit()
         else:
-            feedback.reportError("slice error: First object must be list.", True)
-            sys.exit()
+            QUtilsExceptions.CriticalError("Slice Error: First object must be list.")
+
         
         #=====Range======#
         if _range == None:
@@ -90,8 +125,7 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
             del_range_list = []
             for ind_range in _range:
                 if not isinstance(ind_range, tuple) or len(ind_range) > 2:
-                    feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuples.", True)
-                    sys.exit()
+                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of said tuples.")
                 if len(ind_range) == 1:
                     _range.append((max(ind_range), None))
                     del_range_list.append(ind_range)
@@ -101,12 +135,10 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
                 start = 0 if start == None else start
                 stop = _count - 1 if stop == None or stop > _count - 1 else stop
                 if start > stop:
-                    feedback.reportError("slice error: second object must be a tuple containing a range of two values or a list of said tuple. The first value must be less then the second value.", True)
-                    sys.exit()
+                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of said tuple. The first value must be less then the second value.")
                 _includeList.extend([r for r in range(start, stop + 1)])
         else:
-            feedback.reportError("slice error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.", True)
-            sys.exit()
+            QUtilsExceptions.CriticalError("Slice Error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.")
 
         #=====Except=====#
         r_except = []
@@ -123,18 +155,15 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
                 elif isinstance(ind_except, int):
                     r_except.append(ind_except)
                 else:
-                    feedback.reportError("slice error: third object must be Noneor list of ints or tuple ranges", True)
-                    sys.exit()
+                    QUtilsExceptions.CriticalError("Slice Error: third object must be Noneor list of ints or tuple ranges")
             if max(r_except) > _count - 1:
-                feedback.reportError("slice error: third object max value higher then the number of objects.", True)
-                sys.exit()
+                QUtilsExceptions.CriticalError("Slice Error: third object max value higher then the number of objects.")
         else:
-            feedback.reportError("slice error: third object must be None or list of ints or tuple ranges", True)
-            sys.exit()
+            QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
         
     else:
         _includeList.extend([r for r in range(estart, _count)])
-        feedback.pushWarning("slice error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire list.")
+        feedback.pushWarning("Slice Error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire list.")
 
     check_featurenumber = []
     check_featurenumber_1based = []
@@ -360,6 +389,9 @@ class VectorProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>  Vector to Feature Conversion  <<<<<<<<<<<<#
     #-------------------------------------------------------#
     def VectorToFeature(self):
+        _list = []
+        for i in self._vector.getFeatures():
+            _list.append(i)
         return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback)
 
     #======================================================#
@@ -398,9 +430,10 @@ class FeatureProcessing:
     #-------------------------------------------------------#
 
     def FeaturesToLayer(self, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
-        geomlist = ["MultiPoint", "MultiPolyline", "MultiPolygon"] if self._feature.geometry().isMultipart() else ["Point", "Line", "Polygon"]
-        _layer = self._context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[self._feature.geometry().type()], "_ListSlicer_TEMP_LAYER_", "memory"))
+        geomlist = ["MultiPoint", "MultiLine", "MultiPolygon"] if self._feature.geometry().isMultipart() else ["Point", "Line", "Polygon"]
+        _layer = self._context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[self._feature.geometry().type()], "_FeatureToLayer_MEM_LAYER_", "memory"))
         _layer.startEditing()
+        _layer.setCrs(self._context.project().crs())
         _layer.dataProvider().addAttributes(self._feature.fields())
         _layer.dataProvider().addFeatures(ListSlicer(self.featurelist, Slice, self._feedback, self._context))
         _layer.commitChanges()
