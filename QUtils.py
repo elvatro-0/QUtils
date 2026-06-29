@@ -18,8 +18,8 @@ from qgis.core import(
     QgsProcessingException
 )
 from qgis import processing
-from typing import TYPE_CHECKING
-import functools, inspect, traceback 
+from typing import TYPE_CHECKING, Union
+import functools, inspect, traceback
 
 #========================================================================================================#
 #----------------------------------------------Error Handler---------------------------------------------#
@@ -59,7 +59,7 @@ class QUtilsExceptions(Exception):
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
 @QUtilsExceptions.ErrorHandling
-def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
+def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
     """
     Applies a three component slicing rule to a list of objects or QgsFeatureIterator, returning a filtered List or QgsFeatureIterator. \n
     *because the native slice is a bit rubbish* \n
@@ -110,7 +110,7 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
         #=====Include=====#
         if _include == None:
             pass
-        elif isinstance(_include, list) and max(_include):
+        elif isinstance(_include, list):
             if _count - 1 < max(_include):
                 QUtilsExceptions.CriticalError(f"Slice Error: first object contains int higher then the number of objects. Max int: {max(_include)} Object Count: {_count}")
             _includeList.extend(_include)
