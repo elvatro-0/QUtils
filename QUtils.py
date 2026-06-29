@@ -29,6 +29,7 @@ class QUtilsExceptions(Exception):
     def __init__(self, message: str = None):
         super().__init__(message)
         self.message = "" if message == None else message
+    @staticmethod
     def CriticalError(message: str):
         raise QUtilsExceptions(message)
 
@@ -123,14 +124,16 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
         elif (isinstance(_range, tuple) and len(_range) <= 2) or isinstance(_range, list):
             _range = [_range] if isinstance(_range, tuple) else _range
             del_range_list = []
+            norm_range = []
             for ind_range in _range:
                 if not isinstance(ind_range, tuple) or len(ind_range) > 2:
                     QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of said tuples.")
                 if len(ind_range) == 1:
-                    _range.append((max(ind_range), None))
+                    norm_range.append((max(ind_range), None))
                     del_range_list.append(ind_range)
             for del_r in del_range_list:
                 _range.remove(del_r)
+            _range.extend(norm_range)
             for start, stop in _range:
                 start = 0 if start == None else start
                 stop = _count - 1 if stop == None or stop > _count - 1 else stop
@@ -149,7 +152,7 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
                 if isinstance(ind_except, tuple):
                     ind_except = (max(ind_except), None) if len(ind_except) == 1 else ind_except
                     estart, estop = ind_except
-                    estart = 0 if start == None else estart
+                    estart = 0 if estart == None else estart
                     estop = _count - 1 if estop == None or estop > _count - 1 else estop
                     r_except.extend([r for r in range(estart, estop + 1)])
                 elif isinstance(ind_except, int):
@@ -162,7 +165,7 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[list[int], tuple[in
             QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
         
     else:
-        _includeList.extend([r for r in range(estart, _count)])
+        _includeList.extend([r for r in range(0, _count)])
         feedback.pushWarning("Slice Error: object must be tuple containing three list/tuple objects (Include, Range, Exclude). Defaulting to entire list.")
 
     check_featurenumber = []
