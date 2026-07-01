@@ -22,15 +22,16 @@ from typing import TYPE_CHECKING, Union
 import functools, inspect, traceback
 
 #========================================================================================================#
-#----------------------------------------------Error Handler---------------------------------------------#
+#---------------------------------------------Error Handler----------------------------------------------#
 #===============================================>      <=================================================#
 
-class QUtilsExceptions(Exception):
+#I want error messages to look nicer
+class QUtilsExceptions(QgsProcessingException):
     def __init__(self, message: str = None):
         super().__init__(message)
         self.message = "" if message == None else message
     @staticmethod
-    def CriticalError(message: str):
+    def CriticalError(message: str = None):
         raise QUtilsExceptions(message)
 
     def ErrorHandling(func):
@@ -38,7 +39,7 @@ class QUtilsExceptions(Exception):
         def stack_tracer(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
-            except Exception as _except:
+            except QUtilsExceptions as _except:
                 feedback = None
                 for fb in inspect.signature(func).bind(*args, **kwargs).arguments.values():
                     if isinstance(fb, QgsProcessingFeedback):
@@ -46,26 +47,29 @@ class QUtilsExceptions(Exception):
                         break
 
                 feedback.reportError(
-                f"\n QUtils Critical Error\n"
+                "\n QUtils Critical Error\n"
                 f"{'='*50}\n"
-                f"STACK TRACE:\n{"".join(traceback.format_list(traceback.extract_stack()[:-1]))}\n"
-                f"{'='*50}"
+                f"{func.__name__ if func.__name__ != "__init__" else func.__class__} Error\n"
+                f"Traceback:\n{''.join(traceback.format_list(traceback.extract_stack()[:-1]))}"
                 ) if feedback != None else None
-                raise QgsProcessingException(f"\n{_except.message}\n") from None
+                raise QgsProcessingException(f"{_except.message}\n")
         return stack_tracer
 
 
 #========================================================================================================#
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
+
+#and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
+#That performance loss is on you for being weird.
 @QUtilsExceptions.ErrorHandling
-def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
+def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
     """
     Applies a three component slicing rule to a list of objects or QgsFeatureIterator, returning a filtered List or QgsFeatureIterator. \n
     *because the native slice is a bit rubbish* \n
-    :param List: List of objects to slice (supports QgsFeatureIterator).
+    :param input_list: List of objects to slice (supports QgsFeatureIterator).
     :param feedback: QgsProcessingFeedback object for error and warning reporting.
-    :param Slice: Tuple defining slicing behaviour: \n
+    :param input_slice: Tuple defining slicing behaviour: \n
                 (Include, Range, Exclude)
                 Include:
                     - None -> no explicit inclusions
@@ -74,45 +78,48 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
                     - None -> no ranges
                     - (start, stop) -> range of indices to be included
                     - list[(start, stop)] -> multiple ranges
-                    - single int within a range defaults as the start, stop defaults as None
-                    - start as None defaults as 0, stop as None defaults as object count
+                    - single positive int within a range defaults as the start, stop defaults as None
+                    - single negative int defauls as stop, start defaults as 0
+                    - start as None defaults as 0, stop as None defaults as object count - 1 (because 0-based)
                 Exclude:
                     - None -> no explicit exclusions
                     - list[int] -> explicit indicies to exclude
                     - list[(start, stop)] -> range if indicies to exclulde (can be multiple ranges)
+                    - Exclude range logic is consistant with Range param logic
+                    - Note: Exclude ints override include (Include and Range) ints
     :return: Filtered list of objects or QgsFeatureIterator
     """
 
-    if Slice == None:
-        return List
-    if isinstance(List, list):
-        _count = len(List)
-    if isinstance(List, QgsFeatureIterator):
+    if input_slice == None:
+        return input_list
+    if isinstance(input_list, list):
+        _count = len(input_list)
+    if isinstance(input_list, QgsFeatureIterator):
         if context != None:
-            first = next(List)
-            List.rewind()
+            first = next(input_list)
+            input_list.rewind()
             geomlist = ["MultiPoint", "MultiPolyline", "MultiPolygon"] if first.geometry().isMultipart() else ["Point", "Line", "Polygon"]
             c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[first.geometry().type()], "_ListSlicer_MEM_LAYER_", "memory"))
             c_layer.startEditing()
             c_layer.setCrs(context.project().crs())
             c_layer.dataProvider().addAttributes(first.fields())
-            c_layer.dataProvider().addFeatures(List)
+            c_layer.dataProvider().addFeatures(input_list)
             c_layer.commitChanges()
             _count = c_layer.featureCount()
         else:
-            QUtilsExceptions.CriticalError("Slice Error: Context required for QgsFeatureIterator input")
+            QUtilsExceptions.CriticalError("Slice Error: Context required for QgsFeatureIterator as input")
 
 
     _includeList = []
-    if isinstance(Slice, tuple) and len(Slice) == 3:
-        _include, _range, _except = Slice
+    if isinstance(input_slice, tuple) and len(input_slice) == 3:
+        _include, _range, _except = input_slice
         
         #=====Include=====#
         if _include == None:
             pass
         elif isinstance(_include, list):
             if _count - 1 < max(_include):
-                QUtilsExceptions.CriticalError(f"Slice Error: first object contains int higher then the number of objects. Max int: {max(_include)} Object Count: {_count}")
+                QUtilsExceptions.CriticalError(f"Slice Error: first object contains int higher then the objects bounds. Max int: {max(_include)} Object upper bound int: {_count - 1}")
             _includeList.extend(_include)
         else:
             QUtilsExceptions.CriticalError("Slice Error: First object must be list.")
@@ -127,9 +134,13 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
             norm_range = []
             for ind_range in _range:
                 if not isinstance(ind_range, tuple) or len(ind_range) > 2:
-                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of said tuples.")
+                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges.")
                 if len(ind_range) == 1:
-                    norm_range.append((max(ind_range), None))
+                    if max(ind_range) >= 0:
+                        norm_range.append((max(ind_range), None))
+                    elif max(ind_range) < 0:
+                        norm_range.append((0, -max(ind_range)))
+                    #max here is just a neat way to extract the value if you add a comma after the int. E.g. (5,) == (5) -> (5, None); (-5,) == (-5) -> (0, 5)
                     del_range_list.append(ind_range)
             for del_r in del_range_list:
                 _range.remove(del_r)
@@ -138,7 +149,7 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
                 start = 0 if start == None else start
                 stop = _count - 1 if stop == None or stop > _count - 1 else stop
                 if start > stop:
-                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of said tuple. The first value must be less then the second value.")
+                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges. The first value must be less then the second value.")
                 _includeList.extend([r for r in range(start, stop + 1)])
         else:
             QUtilsExceptions.CriticalError("Slice Error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.")
@@ -150,7 +161,11 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
         elif isinstance(_except, list) and len(_except) > 0:
             for ind_except in _except:
                 if isinstance(ind_except, tuple):
-                    ind_except = (max(ind_except), None) if len(ind_except) == 1 else ind_except
+                    if len(ind_except) == 1:
+                        if max(ind_except) >= 0:
+                            ind_except = (max(ind_except), None)
+                        elif max(ind_except) < 0:
+                            ind_except = (0, -max(ind_except))
                     estart, estop = ind_except
                     estart = 0 if estart == None else estart
                     estop = _count - 1 if estop == None or estop > _count - 1 else estop
@@ -158,9 +173,9 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
                 elif isinstance(ind_except, int):
                     r_except.append(ind_except)
                 else:
-                    QUtilsExceptions.CriticalError("Slice Error: third object must be Noneor list of ints or tuple ranges")
+                    QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
             if max(r_except) > _count - 1:
-                QUtilsExceptions.CriticalError("Slice Error: third object max value higher then the number of objects.")
+                QUtilsExceptions.CriticalError("Slice Error: third object max value int is higher then the objects bounds.")
         else:
             QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
         
@@ -176,13 +191,11 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
             check_featurenumber_1based.append(featuren + 1)
     filterList = sorted(check_featurenumber)
 
-    if isinstance(List, list):
-        _returnList = []
-        for n in filterList:
-            _returnList.append(List[n])
-        return _returnList
+    if isinstance(input_list, list):
+        return [input_list[n] for n in filterList]
 
-    if isinstance(List, QgsFeatureIterator):
+
+    if isinstance(input_list, QgsFeatureIterator):
         filterList = sorted(check_featurenumber_1based)
         return c_layer.getFeatures(QgsFeatureRequest().setFilterFids(filterList))
 
@@ -191,10 +204,10 @@ def ListSlicer(List: list | QgsFeatureIterator, Slice: tuple[Union[list[int], No
 #===============================================>      <=================================================#
 
 class FlexibleMapLayer:
-    def __init__(self, Input_Pointer: str, context: QgsProcessingContext):
-        if not isinstance(Input_Pointer, str):
+    def __init__(self, input_pointer: str, context: QgsProcessingContext):
+        if not isinstance(input_pointer, str):
             raise TypeError("FlexibleMapLayer Received Live Qgs Object - Requires Pointer String")
-        self._pointer = Input_Pointer
+        self._pointer = input_pointer
         self._context = context
 
     def __str__(self):
@@ -207,8 +220,8 @@ class FlexibleMapLayer:
         return getattr(QgsProcessingUtils.mapLayerFromString(self._pointer, self._context), name)
 
 class BaseLayerProcesser(FlexibleMapLayer):
-    def __init__(self, Input_Pointer: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
-        super().__init__(Input_Pointer, context)
+    def __init__(self, input_pointer: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+        super().__init__(input_pointer, context)
         self._feedback = feedback
 
     def is_pointerStr(self, Input) -> bool:
@@ -240,10 +253,10 @@ class VectorProcessing(BaseLayerProcesser):
     in self._vector. This dual structure allows the returned VectorProcessing object to behave 
     as BOTH a pointer string (via __str__) and a live QgsMapLayer (via __getattr__), which is 
     required for seamless use in processing.run() while maintaining VectorProcessing methods for chaining."""
-    def __init__(self, Input_Vector: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+    def __init__(self, input_vector: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
         self._context = context
         self._feedback = feedback
-        self._vector = BaseLayerProcesser(Input_Vector, self._context, self._feedback)
+        self._vector = BaseLayerProcesser(input_vector, self._context, self._feedback)
     
     def run(self, algOrName:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
         _output = self._vector.ProcessingOutput(
@@ -262,123 +275,124 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def fixGeometries(self, Method: int = 1, Output="TEMPORARY_OUTPUT"):
+    def fixGeometries(self, method: int = 1, output="TEMPORARY_OUTPUT"):
         """
         Native Fix geometries Process \n
-        :param Method: Repair method: \n
+        :param method: Repair method: \n
                        0 = Linework
                        1 = Structure
-        :param Output: Output file path string | Default Temporary Memory Output
+        :param output: Output file path string | Default Temporary Memory Output
         :return: VectorProcessing(FlexibleVectorLayer) Object
         """
         return self.run(
             "native:fixgeometries", {
                 'INPUT': str(self._vector),
-                'METHOD': Method,
-                'OUTPUT': Output
+                'METHOD': method,
+                'OUTPUT': output
             }
         )
-    def Dissolve(self, Field: QgsFields = [], SeparateDisjoint: bool = False, Output="TEMPORARY_OUTPUT"):
+    def Dissolve(self, field: QgsFields = [], separate_disjoint: bool = False, output="TEMPORARY_OUTPUT"):
         """
         Native Dissolve Process \n
-        :param Field: QgsFields list of attributes | Blank list will dissolve all atrtibute fields
-        :param SeparateDisJoint: If True, features and parts that do not overlap or touch will be exported as separate features
-        :param Output: Output file path string | Default Temporary Memory Output
+        :param field: QgsFields list of attributes | Blank list will dissolve all atrtibute fields
+        :param separateDisJoint: If True, features and parts that do not overlap or touch will be exported as separate features
+        :param output: Output file path string | Default Temporary Memory Output
         :return: VectorProcessing(FlexibleVectorLayer) Object
         """
         return self.run(
             "native:dissolve", {
                 'INPUT':str(self._vector),
-                'FIELD': Field,
-                'SEPARATE_DISJOINT': SeparateDisjoint,
-                'OUTPUT': Output
+                'FIELD': field,
+                'SEPARATE_DISJOINT': separate_disjoint,
+                'OUTPUT': output
             }
         )
-    def Smooth(self, Iterations:int = 1, Offset: float = 0.5, Max_Angle: float = 180, Output="TEMPORARY_OUTPUT"):
+    def Smooth(self, iterations:int = 1, offset: float = 0.5, max_angle: float = 180, output="TEMPORARY_OUTPUT"):
         """
         Native Smooth geometry process
         """
         return self.run(
             "native:smoothgeometry", {
                 'INPUT':str(self._vector),
-                'ITERATIONS':Iterations,
-                'OFFSET':Offset,
-                'MAX_ANGLE':Max_Angle,
-                'OUTPUT':Output
+                'ITERATIONS':iterations,
+                'OFFSET':offset,
+                'MAX_ANGLE':max_angle,
+                'OUTPUT':output
             }
         )
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def RingBuffer(self, Radius: float, Rings: int, Invert: bool = False, Overlap: int = 0, Segments: int = 16, Output="TEMPORARY_OUTPUT"):
+    def RingBuffer(self, diameter: float, rings: int, invert: bool = False, overlap: int = 0, segments: int = 16, output="TEMPORARY_OUTPUT"):
         """
         Creates a multi-ring buffer with overlap logic based on a generated Class field \n
-        :param Input: TypeVectorPoint | TypeVectorLine
-        :param Radius: Total Radius (map units)
-        :param Rings: Number of donut rings
-        :param Invert: True = Increasing class value inwards (inner ring as highest value) \n
+        :param input: TypeVectorPoint | TypeVectorLine
+        :param diameter: Total Diameter (map units)
+        :param rings: Number of donut rings
+        :param invert: True = Increasing class value inwards (inner ring as highest value) \n
                        False = increases class value outwards (Outer ring as highest value)
-        :param Overlap: Overlap Resolution: \n
+        :param overlap: Overlap Resolution: \n
                         0 = Lower value overrides
                         1 = Higher value overrides
-        :param Segments: Number of line segments to approximate a quarter circle when creating rounded offsets
-        :param Output: Output file path string | Default Temporary Memory Output
+        :param segments: Number of line segments to approximate a quarter circle when creating rounded offsets
+        :param output: Output file path string | Default Temporary Memory Output
         :return: VectorProcessing(FlexibleVectorLayer) Object
         """
         return self.run(
             "script:Ring_Buffer", {
                 'INPUT': str(self._vector),
-                'RADIUS': Radius,
-                'RINGS': Rings,
-                'INVERT': Invert,
-                'OVERLAP': Overlap,
-                'SEGMENTS': Segments,
-                'OUTPUT': Output
+                'DIAMETER': diameter,
+                'RINGS': rings,
+                'INVERT': invert,
+                'OVERLAP': overlap,
+                'SEGMENTS': segments,
+                'OUTPUT': output
             }
         )
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def Rasterise(self, Field:str, Burn:float = 0, Use_Z:bool = False, Units:int = 1, Width:float = 30, Height:float = 30, Extent:str = None, NoData:float = 0, Creation_Options:str = None, Data_Type:int = 5, Init:float = None, Invert:bool = False, Extra:str = '', Output = "TEMPORARY_OUTPUT"):
+    def Rasterise(self, field:str, burn:float = 0, use_Z:bool = False, units:int = 1, width:float = 30, height:float = 30, extent:str = None, nodata:float = 0, creation_options:str = None, data_type:int = 5, init:float = None, invert:bool = False, extra:str = '', output = "TEMPORARY_OUTPUT"):
         """
         GDAL rasterize Process \n
-        :param Field: Attribute field used to assign pixel values.
-        :param Burn: Constant value to burn into all pixels.
-        :param Use_Z: Uses Z-values from geometry as pixel values, if True.
-        :param Units: Pixel size units: \n
+        :param field: Attribute field used to assign pixel values.
+        :param burn: Constant value to burn into all pixels.
+        :param use_Z: Uses Z-values from geometry as pixel values, if True.
+        :param units: Pixel size units: \n
                   0 = Georeferenced units per pixel
                   1 = Pixels per map unit
-        :param Width: Pixel width.
-        :param Height: Pixel height.
-        :param Extent: Extent string "xmin,xmax,ymin,ymax" defining raster bounds. Uses layer extent if None.
-        :param NoData: NoData value assigned to empty pixels.
-        :param Data_Type: Output raster data type: \n
+        :param width: Pixel width.
+        :param height: Pixel height.
+        :param extent: Extent string "xmin,xmax,ymin,ymax" defining raster bounds. Uses layer extent if None.
+        :param nodata: NoData value assigned to empty pixels.
+        :param Creation_Options: GDAL creation options string.
+        :param data_type: Output raster data type: \n
                       0 = Byte, 1 = Int16, 2 = UInt16, 3 = Int32, 4 = UInt32, 5 = Float32, 6 = Float64
-        :param Init: Initial value for all pixels before burning geometry.
-        :param Invert: inverts the burn mask.
-        :param Extra: Additional GDAL command-line arguments.
-        :param Output: Output file path string | Default Temporary Memory Output
-        :return: RasterProcessing(FlexibleVectorLayer) Object
+        :param init: Initial value for all pixels before burning geometry.
+        :param invert: inverts the burn mask.
+        :param extra: Additional GDAL command-line arguments.
+        :param output: Output file path string | Default Temporary Memory Output
+        :return: RasterProcessing(FlexibleRasterLayer) Object
         """
         _output = self._vector.ProcessingOutput(
             processing.run(
                 "gdal:rasterize", {
                     'INPUT': str(self._vector),
-                    'FIELD':Field,
-                    'BURN':Burn,
-                    'USE_Z':Use_Z,
-                    'UNITS':Units,
-                    'WIDTH':Width,
-                    'HEIGHT':Height,
-                    'EXTENT':Extent,
-                    'NODATA':NoData,
-                    'CREATION_OPTIONS':Creation_Options,
-                    'DATA_TYPE':Data_Type,
-                    'INIT':Init,
-                    'INVERT':Invert,
-                    'EXTRA':Extra,
-                    'OUTPUT':Output
+                    'FIELD':field,
+                    'BURN':burn,
+                    'USE_Z':use_Z,
+                    'UNITS':units,
+                    'WIDTH':width,
+                    'HEIGHT':height,
+                    'EXTENT':extent,
+                    'NODATA':nodata,
+                    'CREATION_OPTIONS':creation_options,
+                    'DATA_TYPE':data_type,
+                    'INIT':init,
+                    'INVERT':invert,
+                    'EXTRA':extra,
+                    'OUTPUT':output
                 },
                 is_child_algorithm=True,
                 context=self._context,
@@ -392,9 +406,6 @@ class VectorProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>  Vector to Feature Conversion  <<<<<<<<<<<<#
     #-------------------------------------------------------#
     def VectorToFeature(self):
-        _list = []
-        for i in self._vector.getFeatures():
-            _list.append(i)
         return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback)
 
     #======================================================#
@@ -416,32 +427,34 @@ if TYPE_CHECKING:
 class FeatureProcessing:
     """NOTE: When calling QgsFeature methods on a FeatureProcessing object, the method is executed *only* on the first QgsFeature in the feature list/iterator. \n
     This is useful for broader geometry introspection, but for geometry operations or transformations, iterate through the featurelist attribute."""
-    def __init__(self, Input_Features: list[QgsFeature] | QgsFeatureIterator, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
-        #if (isinstance(Input_Features, list) and not isinstance(Input_Features[0], QgsFeature)) or not isinstance(Input_Features, QgsFeatureIterator):
-        #    raise TypeError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects or QgsFeatureIterator as input")
-        self._context = context
-        self._feedback = feedback
-        self.featurelist = Input_Features
-        if isinstance(Input_Features, list):
-            self._feature = self.featurelist[0]
-        if isinstance(Input_Features, QgsFeatureIterator):
-            self._feature = next(self.featurelist)
-            self.featurelist.rewind()
+    @QUtilsExceptions.ErrorHandling
+    def __init__(self, input_features: list[QgsFeature] | QgsFeatureIterator, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
+        if (isinstance(input_features, list) and isinstance(input_features[0], QgsFeature)) or isinstance(input_features, QgsFeatureIterator):
+            self._context = context
+            self._feedback = feedback
+            self.featurelist = input_features
+            if isinstance(input_features, list):
+                self._feature = self.featurelist[0]
+            if isinstance(input_features, QgsFeatureIterator):
+                self._feature = next(self.featurelist)
+                self.featurelist.rewind()
+        else:
+            QUtilsExceptions.CriticalError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects or QgsFeatureIterator as input")
 
     #-------------------------------------------------------#
     #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
     #-------------------------------------------------------#
 
-    def FeaturesToLayer(self, Slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
+    def FeaturesToLayer(self, input_slice: tuple[list[int], tuple[int, int] | list[tuple[int, int]], list[int] | list[tuple[int, int]]] = None):
         geomlist = ["MultiPoint", "MultiLine", "MultiPolygon"] if self._feature.geometry().isMultipart() else ["Point", "Line", "Polygon"]
         _layer = self._context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[self._feature.geometry().type()], "_FeatureToLayer_MEM_LAYER_", "memory"))
         _layer.startEditing()
         _layer.setCrs(self._context.project().crs())
         _layer.dataProvider().addAttributes(self._feature.fields())
-        _layer.dataProvider().addFeatures(ListSlicer(self.featurelist, Slice, self._feedback, self._context))
+        _layer.dataProvider().addFeatures(ListSlicer(self.featurelist, input_slice, self._feedback, self._context))
         _layer.commitChanges()
 
-        self._feedback.pushCommandInfo(f"Result: FeaturesToLayer_{_layer.id()}")
+        self._feedback.pushCommandInfo(f"Result: FeaturesToLayer: {_layer.id()}")
         return VectorProcessing(_layer.id(), self._context, self._feedback)
 
     #======================================================#
@@ -461,10 +474,10 @@ if TYPE_CHECKING:
 #===============================================>      <=================================================#
 
 class RasterProcessing(BaseLayerProcesser):
-    def __init__(self, Input_Raster: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback, Name: str = None):
+    def __init__(self, input_raster: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
         self._context = context
         self._feedback = feedback
-        self._raster = BaseLayerProcesser(Input_Raster, self._context, self._feedback)
+        self._raster = BaseLayerProcesser(input_raster, self._context, self._feedback)
     
     def run(self, algOrName:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
         _output = self._raster.ProcessingOutput(
@@ -483,90 +496,90 @@ class RasterProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def ClipRasterByMaskLayer(self, Mask:str, Source_CRS:QgsCoordinateReferenceSystem = None, Target_CRS:QgsCoordinateReferenceSystem = None, Target_Extent:str = None, NoData:float = None, Alpha_Band:bool = False, Crop_To_Cutline:bool = True, Keep_Resolution:bool = False, Set_Resolution:bool = False, X_Resolution:float = None, Y_Resolution:float = None, Multithreading:bool = False, Creation_Options:str = None, Data_Type:int = 0, Extra='', Output = "TEMPORARY_OUTPUT"):
+    def ClipRasterByMaskLayer(self, mask:str, source_crs:QgsCoordinateReferenceSystem = None, target_crs:QgsCoordinateReferenceSystem = None, target_extent:str = None, nodata:float = None, alpha_band:bool = False, crop_to_cutline:bool = True, keep_resolution:bool = False, set_resolution:bool = False, x_resolution:float = None, y_resolution:float = None, multithreading:bool = False, creation_options:str = None, data_type:int = 0, extra='', output = "TEMPORARY_OUTPUT"):
         """
         GDAL Clip raster by mask layer process \n
-        :param Mask: Pointer string of the mask layer (vector or raster).
-        :param Source_CRS: CRS of the input raster. Uses raster CRS if None.
-        :param Target_CRS: CRS of the output raster. Uses raster CRS if None.
-        :param NoData: NoData value assigned to pixels outside the mask.
-        :param Alpha_Band: Adds an alpha band to represent transparency.
-        :param Crop_To_Cutline: Crops output to mask geometry extent.
-        :param Keep_Resolution: Preserves input raster resolution.
-        :param Set_resolution: Forces output resolution using X/Y values.
-        :param X_Resolution: Output pixel width (required if Set_Resolution=True).
-        :param Y_Resolution: Output pixel height (required if Set_Resolution=True).
-        :param Multithreading: Enables GDAL multi-threaded processing.
-        :param Creation_Options: GDAL creation options string.
-        :param Data_Type: Output raster data type (GDAL numeric code).
-        :param Extra: Additional GDAL command-line arguments.
-        :param Output: Output file path string | Default Temporary Memory Output.
+        :param mask: Pointer string of the mask layer (vector or raster).
+        :param source_CRS: CRS of the input raster. Uses raster CRS if None.
+        :param target_CRS: CRS of the output raster. Uses raster CRS if None.
+        :param nodata: NoData value assigned to pixels outside the mask.
+        :param alpha_band: Adds an alpha band to represent transparency.
+        :param crop_to_cutline: Crops output to mask geometry extent.
+        :param keep_resolution: Preserves input raster resolution.
+        :param set_resolution: Forces output resolution using X/Y values.
+        :param x_resolution: Output pixel width (required if Set_Resolution=True).
+        :param y_resolution: Output pixel height (required if Set_Resolution=True).
+        :param multithreading: Enables GDAL multi-threaded processing.
+        :param creation_Options: GDAL creation options string.
+        :param data_type: Output raster data type (GDAL numeric code).
+        :param extra: Additional GDAL command-line arguments.
+        :param output: Output file path string | Default Temporary Memory Output.
         :return: RasterProcessing(FlexibleRasterLayer) object.
         """
         return self.run(
             "gdal:cliprasterbymasklayer", {
                 'INPUT': str(self._raster),
-                'MASK': str(Mask),
-                'SOURCE_CRS':Source_CRS,
-                'TARGET_CRS':Target_CRS,
-                'TARGET_EXTENT':Target_Extent,
-                'NODATA':NoData,
-                'ALPHA_BAND':Alpha_Band,
-                'CROP_TO_CUTLINE':Crop_To_Cutline,
-                'KEEP_RESOLUTION':Keep_Resolution,
-                'SET_RESOLUTION':Set_Resolution,
-                'X_RESOLUTION':X_Resolution,
-                'Y_RESOLUTION':Y_Resolution,
-                'MULTITHREADING':Multithreading,
-                'CREATION_OPTIONS':Creation_Options,
-                'DATA_TYPE':Data_Type,
-                'EXTRA':Extra,
-                'OUTPUT':Output
+                'MASK': str(mask),
+                'SOURCE_CRS':source_crs,
+                'TARGET_CRS':target_crs,
+                'TARGET_EXTENT':target_extent,
+                'NODATA':nodata,
+                'ALPHA_BAND':alpha_band,
+                'CROP_TO_CUTLINE':crop_to_cutline,
+                'KEEP_RESOLUTION':keep_resolution,
+                'SET_RESOLUTION':set_resolution,
+                'X_RESOLUTION':x_resolution,
+                'Y_RESOLUTION':y_resolution,
+                'MULTITHREADING':multithreading,
+                'CREATION_OPTIONS':creation_options,
+                'DATA_TYPE':data_type,
+                'EXTRA':extra,
+                'OUTPUT':output
             }
         )
-    def ClipRasterByExtent(self, Clipping_Extent:str, OverrideCRS:bool = False, NoData:float = 0, Creation_Options:str = None, Data_Type:int = 0, Extra='', Output="TEMPORARY_OUTPUT"):
+    def ClipRasterByExtent(self, clipping_extent:str, override_crs:bool = False, nodata:float = 0, creation_options:str = None, data_type:int = 0, extra='', output="TEMPORARY_OUTPUT"):
         """
         GDAL Clip raster by extent process \n
-        :param Clipping_Extent: Extent string "xmin,xmax,ymin,ymax" defining the output raster bounds.
-        :param OverrideCRS: Treats extent as being within the rasters CRS.
-        :param NoData: NoData value assigned to pixels outside the extent.
-        :param Creation_Options: GDAL creation options string.
-        :param Data_Type: Output raster data type (GDAL numeric code).
-        :param Extra: Additional GDAL command-line arguments.
-        :param Output: Output file path string | Default Temporary Memory Output.
+        :param clipping_extent: Extent string "xmin,xmax,ymin,ymax" defining the output raster bounds.
+        :param override_crs: Treats extent as being within the rasters CRS.
+        :param nodata: NoData value assigned to pixels outside the extent.
+        :param creation_options: GDAL creation options string.
+        :param data_type: Output raster data type (GDAL numeric code).
+        :param extra: Additional GDAL command-line arguments.
+        :param output: Output file path string | Default Temporary Memory Output.
         :return: RasterProcessing(FlexibleRasterLayer) object.
         """
         return self.run(
             "gdal:cliprasterbyextent", {
                 'INPUT':str(self._raster),
-                'PROJWIN':Clipping_Extent,
-                'OVERCRS':OverrideCRS,
-                'NODATA':NoData,
-                'CREATION_OPTIONS':Creation_Options,
-                'DATA_TYPE':Data_Type,
-                'EXTRA':Extra,
-                'OUTPUT':Output
+                'PROJWIN':clipping_extent,
+                'OVERCRS':override_crs,
+                'NODATA':nodata,
+                'CREATION_OPTIONS':creation_options,
+                'DATA_TYPE':data_type,
+                'EXTRA':extra,
+                'OUTPUT':output
             }
         )
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def Vectorise(self, Raster_Band: int = 1, Field_Name: str = 'VALUE', Output="TEMPORARY_OUTPUT"):
+    def Vectorise(self, raster_band: int = 1, field_name: str = 'VALUE', output="TEMPORARY_OUTPUT"):
         """
         Native Raster pixels to polygons Process \n
-        :param Raster_Band: Raster band index to convert.
-        :param Field_Name: Attribute field name storing pixel values.
-        :param Output: Output file path string | Default Temporary Memory Output.
+        :param raster_band: Raster band index to convert.
+        :param field_name: Attribute field name storing pixel values.
+        :param output: Output file path string | Default Temporary Memory Output.
         :return: VectorProcessing(FlexibleVectorLayer) object.
         """
         _output = self._raster.ProcessingOutput(
             processing.run(
                 "native:pixelstopolygons", {
                     'INPUT_RASTER': str(self._raster),
-                    'RASTER_BAND': Raster_Band,
-                    'FIELD_NAME': Field_Name,
-                    'OUTPUT': Output
+                    'RASTER_BAND': raster_band,
+                    'FIELD_NAME': field_name,
+                    'OUTPUT': output
                 },
                 is_child_algorithm=True,
                 context=self._context,
@@ -588,12 +601,15 @@ if TYPE_CHECKING:
 
 
 #========================================================================================================#
-#
+
+
 # >(,)(,)(,)(,)(,)(◜⋅)
 #  ^^ ^^ ^^ ^^ ^^
+
+
 #========================================================================================================#
 #------------------------------------------Functionally Useless------------------------------------------#
-#========================================================================================================#
+#=========================================> (just use GeoJson) <=========================================#
 
 class Vector_Decoding:
     def __init__(self, Vector_layer: QgsProcessingFeatureSource):
@@ -619,7 +635,7 @@ class Vector_Decoding:
 
 
     def GeometryFeaturesToDict(self):
-        """Decodes Feature Geometry Attributes into a Python Dictionary"""
+        """just use GeoJson"""
 
         dict_ = {}
         geomTypeList = ["Point", "Line", "Polygon"]
