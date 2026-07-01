@@ -25,7 +25,7 @@ import functools, inspect, traceback
 #---------------------------------------------Error Handler----------------------------------------------#
 #===============================================>      <=================================================#
 
-#I want error messages to look nicer
+#I want error messages to look pretty
 class QUtilsExceptions(QgsProcessingException):
     def __init__(self, message: str = None):
         super().__init__(message)
@@ -49,7 +49,7 @@ class QUtilsExceptions(QgsProcessingException):
                 feedback.reportError(
                 "\n QUtils Critical Error\n"
                 f"{'='*50}\n"
-                f"{func.__name__ if func.__name__ != "__init__" else func.__class__} Error\n"
+                f"{func.__name__ if func.__name__ != '__init__' else func.__class__} Error\n"
                 f"Traceback:\n{''.join(traceback.format_list(traceback.extract_stack()[:-1]))}"
                 ) if feedback != None else None
                 raise QgsProcessingException(f"{_except.message}\n")
@@ -98,7 +98,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
         if context != None:
             first = next(input_list)
             input_list.rewind()
-            geomlist = ["MultiPoint", "MultiPolyline", "MultiPolygon"] if first.geometry().isMultipart() else ["Point", "Line", "Polygon"]
+            geomlist = ["MultiPoint", "MultilineString", "MultiPolygon"] if first.geometry().isMultipart() else ["Point", "LineString", "Polygon"]
             c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[first.geometry().type()], "_ListSlicer_MEM_LAYER_", "memory"))
             c_layer.startEditing()
             c_layer.setCrs(context.project().crs())
@@ -123,34 +123,24 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
             _includeList.extend(_include)
         else:
             QUtilsExceptions.CriticalError("Slice Error: First object must be list.")
-
         
         #=====Range======#
         if _range == None:
             pass
         elif (isinstance(_range, tuple) and len(_range) <= 2) or isinstance(_range, list):
             _range = [_range] if isinstance(_range, tuple) else _range
-            del_range_list = []
-            norm_range = []
             for ind_range in _range:
                 if not isinstance(ind_range, tuple) or len(ind_range) > 2:
                     QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges.")
                 if len(ind_range) == 1:
-                    if max(ind_range) >= 0:
-                        norm_range.append((max(ind_range), None))
-                    elif max(ind_range) < 0:
-                        norm_range.append((0, -max(ind_range)))
+                    ind_range = (0, -max(ind_range)) if max(ind_range) < 0 else (max(ind_range), None)
                     #max here is just a neat way to extract the value if you add a comma after the int. E.g. (5,) == (5) -> (5, None); (-5,) == (-5) -> (0, 5)
-                    del_range_list.append(ind_range)
-            for del_r in del_range_list:
-                _range.remove(del_r)
-            _range.extend(norm_range)
-            for start, stop in _range:
+                start, stop = ind_range
                 start = 0 if start == None else start
                 stop = _count - 1 if stop == None or stop > _count - 1 else stop
                 if start > stop:
                     QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges. The first value must be less then the second value.")
-                _includeList.extend([r for r in range(start, stop + 1)])
+                _includeList.extend([r for r in range(start, stop + 1)])                
         else:
             QUtilsExceptions.CriticalError("Slice Error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.")
 
@@ -162,10 +152,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
             for ind_except in _except:
                 if isinstance(ind_except, tuple):
                     if len(ind_except) == 1:
-                        if max(ind_except) >= 0:
-                            ind_except = (max(ind_except), None)
-                        elif max(ind_except) < 0:
-                            ind_except = (0, -max(ind_except))
+                        ind_except = (0, -max(ind_except)) if max(ind_except) < 0 else (max(ind_except), None)
                     estart, estop = ind_except
                     estart = 0 if estart == None else estart
                     estop = _count - 1 if estop == None or estop > _count - 1 else estop
@@ -197,7 +184,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
 
     if isinstance(input_list, QgsFeatureIterator):
         filterList = sorted(check_featurenumber_1based)
-        return c_layer.getFeatures(QgsFeatureRequest().setFilterFids(filterList))
+        return c_layer.getFeatures(QgsFeatureRequest().setFilterFids(filterList).setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)])))
 
 #========================================================================================================#
 #------------------------------------------Proxy Base Wrappers-------------------------------------------#
@@ -258,10 +245,10 @@ class VectorProcessing(BaseLayerProcesser):
         self._feedback = feedback
         self._vector = BaseLayerProcesser(input_vector, self._context, self._feedback)
     
-    def run(self, algOrName:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
+    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
         _output = self._vector.ProcessingOutput(
             processing.run(
-                algOrName,
+                algorname,
                 parameters,
                 is_child_algorithm=True,
                 context=self._context,
@@ -271,6 +258,9 @@ class VectorProcessing(BaseLayerProcesser):
         )
 
         return VectorProcessing(_output, self._context, self._feedback)
+    
+    #def head(self, rows: int = 5):
+    #    QgsVectorLayer.fields().names
         
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
@@ -454,7 +444,7 @@ class FeatureProcessing:
         _layer.dataProvider().addFeatures(ListSlicer(self.featurelist, input_slice, self._feedback, self._context))
         _layer.commitChanges()
 
-        self._feedback.pushCommandInfo(f"Result: FeaturesToLayer: {_layer.id()}")
+        self._feedback.pushInfo(f"Result: FeaturesToLayer: {_layer.id()}")
         return VectorProcessing(_layer.id(), self._context, self._feedback)
 
     #======================================================#
@@ -479,10 +469,10 @@ class RasterProcessing(BaseLayerProcesser):
         self._feedback = feedback
         self._raster = BaseLayerProcesser(input_raster, self._context, self._feedback)
     
-    def run(self, algOrName:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
+    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
         _output = self._raster.ProcessingOutput(
             processing.run(
-                algOrName,
+                algorname,
                 parameters,
                 is_child_algorithm=True,
                 context=self._context,
