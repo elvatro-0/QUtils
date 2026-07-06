@@ -20,7 +20,7 @@ The run method allows any processing algorithm not already implemented within it
 ***requires pointer string as input***  
   
 **FeatureProcessing** - Wrapper for working directly with QgsFeature object lists and QgsFeatureIterators, providing feature-level introspection and back chaining conversion into a vector layer (VectorProcessing object). VectorProcessing contains a method of converting into QgsFeature object list to support chaining.  
-***requires list of QgsFeature objects as input***
+***requires list of QgsFeature objects or QgsFeatureIterator as input***
 
 _Example Script:_
 ```python
