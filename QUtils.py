@@ -50,7 +50,7 @@ from qgis.core import(
     QgsCoordinateReferenceSystem,
     QgsFeatureIterator,
     QgsFeatureRequest,
-    QgsProcessingException
+    QgsProcessingException,
 )
 from qgis import processing
 from typing import TYPE_CHECKING, Union
@@ -99,11 +99,11 @@ class QUtilsExceptions(QgsProcessingException):
 #and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
 #That performance loss is on you for being weird.
 @QUtilsExceptions.ErrorHandling
-def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator:
+def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLayer, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], feedback: QgsProcessingFeedback, context: QgsProcessingContext = None) -> list | QgsFeatureIterator | QgsVectorLayer:
     """
-    Applies a three component slicing rule to a list of objects or QgsFeatureIterator, returning a filtered List or QgsFeatureIterator. \n
+    Applies a three component slicing rule to a list of objects, a QgsFeatureIterator, or a QgsVectorLayer, returning a filtered List, QgsFeatureIterator, or QgsVectorLayer. \n
     *because the native slice is a bit rubbish* \n
-    :param input_list: List of objects to slice (supports QgsFeatureIterator).
+    :param input_list: List of objects to slice (supports QgsFeatureIterator, and QgsVectorLayer). QgsVectorLayer as input slices the layers features.
     :param feedback: QgsProcessingFeedback object for error and warning reporting.
     :param input_slice: Tuple defining slicing behaviour: \n
                 (Include, Range, Exclude)
@@ -123,14 +123,19 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
                     - list[(start, stop)] -> range if indicies to exclulde (can be multiple ranges)
                     - Exclude range logic is consistant with Range param logic
                     - Note: Exclude ints override include (Include and Range) ints
-    :return: Filtered list of objects or QgsFeatureIterator
+    :return: Filtered list of objects, QgsFeatureIterator, or QgsVectorLayer
     """
 
     if input_slice == None:
         return input_list
-    if isinstance(input_list, list):
+    elif isinstance(input_list, list):
         _count = len(input_list)
-    if isinstance(input_list, QgsFeatureIterator):
+    elif isinstance(input_list, QgsVectorLayer) or isinstance(input_list, QgsMapLayer) or isinstance(input_list, BaseLayerProcesser) or isinstance(input_list, FlexibleMapLayer) or isinstance(input_list, VectorProcessing):
+        if context != None:
+            _count = input_list.featureCount()
+        else:
+            QUtilsExceptions.CriticalError("Slice Error: Context required for QgsVectorLayer as input")
+    elif isinstance(input_list, QgsFeatureIterator):
         if context != None:
             first = next(input_list)
             input_list.rewind()
@@ -145,7 +150,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
         else:
             QUtilsExceptions.CriticalError("Slice Error: Context required for QgsFeatureIterator as input")
 
-
+    
     _includeList = []
     if isinstance(input_slice, tuple) and len(input_slice) == 3:
         _include, _range, _except = input_slice
@@ -217,7 +222,15 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
     if isinstance(input_list, list):
         return [input_list[n] for n in filterList]
 
-
+    if isinstance(input_list, QgsVectorLayer) or isinstance(input_list, QgsMapLayer) or isinstance(input_list, BaseLayerProcesser) or isinstance(input_list, FlexibleMapLayer) or isinstance(input_list, VectorProcessing):
+        filterList = sorted(check_featurenumber_1based)
+        input_list.startEditing()
+        input_list.selectByIds(filterList)
+        input_list.invertSelection()
+        input_list.deleteSelectedFeatures(QgsVectorLayer().DeleteContext(True, context.project()))
+        input_list.commitChanges()
+        return input_list
+    
     if isinstance(input_list, QgsFeatureIterator):
         filterList = sorted(check_featurenumber_1based)
         return c_layer.getFeatures(QgsFeatureRequest().setFilterFids(filterList).setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)])))
@@ -226,7 +239,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator, input_slice: tuple[Union[l
 #------------------------------------------Proxy Base Wrappers-------------------------------------------#
 #===============================================>      <=================================================#
 
-class FlexibleMapLayer:     #this is my baby
+class FlexibleMapLayer:     #this is my baby ♡
     def __init__(self, input_pointer: str, context: QgsProcessingContext):
         if not isinstance(input_pointer, str):
             raise TypeError(f"FlexibleMapLayer Received {repr(input_pointer)} - Requires Pointer String")
@@ -242,26 +255,39 @@ class FlexibleMapLayer:     #this is my baby
     def __getattr__(self, name):
         return getattr(QgsProcessingUtils.mapLayerFromString(self._pointer, self._context), name)
 
+@QUtilsExceptions.ErrorHandling
 class BaseLayerProcesser(FlexibleMapLayer):
     def __init__(self, input_pointer: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
         super().__init__(input_pointer, context)
         self._feedback = feedback
 
-    def is_pointerStr(self, Input) -> bool:
-        if not isinstance(Input, str):
+    def is_pointerStr(self, input) -> bool:
+        if not isinstance(input, str):
             return False
-        _string = QgsProcessingUtils.mapLayerFromString(Input, self._context)
+        _string = QgsProcessingUtils.mapLayerFromString(input, self._context)
         return isinstance(_string, QgsMapLayer)
-    
-    def ProcessingOutput(self, ProcessDict: dict, Output: int = 0) -> str:
-        _return = []
-        for _value in ProcessDict.values():
-            if self.is_pointerStr(_value):
-                _return.append(_value)
-        return _return[Output]
 
-    def addLayerToLoadOnCompletion(self, Output_name: str):
-        self._context.addLayerToLoadOnCompletion(str(self._pointer), QgsProcessingContext.LayerDetails(Output_name, self._context.project()))
+    #output can be specified by the position of the layer pointer str in the processing output dict, or by the spcefic keys name.
+    def ProcessingOutput(self, processdict: dict, output: str | int = 0) -> str | None:
+        if isinstance(output, str):
+            if output not in processdict.keys():
+                QUtilsExceptions.CriticalError(f"output {output} does not exist")
+            elif not self.is_pointerStr(processdict[output]):
+                self._feedback.pushWarning(f"output {output} is not pointer string.")
+                self._feedback.pushInfo(f"{output}: {processdict[output]}")
+                return None
+            else:
+                return processdict[output]
+        if isinstance(output, int):
+            _return = []
+            for _value in processdict.values():
+                if self.is_pointerStr(_value):
+                    _return.append(_value)
+            return _return[output]
+    
+    #roses are red, I like mantle wedge depletion-
+    def addLayerToLoadOnCompletion(self, output_name: str):
+        self._context.addLayerToLoadOnCompletion(str(self._pointer), QgsProcessingContext.LayerDetails(output_name, self._context.project()))
 
 
 #========================================================================================================#
@@ -281,7 +307,7 @@ class VectorProcessing(BaseLayerProcesser):
         self._feedback = feedback
         self._vector = BaseLayerProcesser(input_vector, self._context, self._feedback)
     
-    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
+    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], output: str | int = 0):
         _output = self._vector.ProcessingOutput(
             processing.run(
                 algorname,
@@ -290,17 +316,24 @@ class VectorProcessing(BaseLayerProcesser):
                 context=self._context,
                 feedback=self._feedback
             ),
-            Output=Output
+            output=output
         )
 
-        return VectorProcessing(_output, self._context, self._feedback)
-    
-    def peak(self, rows: int = 5, start: int = 1):
+        if not _output:
+            return self
+        else:
+            return VectorProcessing(_output, self._context, self._feedback)
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>     Debug Methods     <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def peak(self, rows: int = 5, start: int = 1, min_colwidth: int = 6):
         stop = start + rows - 1 if self._vector.featureCount() >= start + rows - 1 else self._vector.featureCount()
         self._feedback.pushInfo(f"\n{'=♡' * 35}=\n Attribute table for {str(self._vector)}\n rows {start}-{stop}")
+        min_colwidth += 1 if min_colwidth & 1 == 1 else 0
         name_string = ""
         for name in self._vector.fields().names():
-            name_Length = 6 if len(str(name)) < 6 else len(str(name))
+            name_Length = min_colwidth if len(str(name)) < min_colwidth else len(str(name))
             name_string += f"{'·' * ((name_Length - len(str(name))) // 2)}{name}{('·' * ((name_Length - len(str(name))) // 2)) + ('·' if len(str(name)) & 1 == 1 else '')}|"        #big padding >.<
         self._feedback.pushCommandInfo(name_string)
         for row, feature in enumerate(self._vector.getFeatures()):
@@ -308,7 +341,7 @@ class VectorProcessing(BaseLayerProcesser):
             if row > stop - 1: break
             row_string = ""
             for name in self._vector.fields().names():
-                name_Length = 6 if len(str(name)) < 6 else len(str(name))
+                name_Length = min_colwidth if len(str(name)) < min_colwidth else len(str(name))
                 name_Length += 1 if name_Length & 1 == 1 else 0
                 cell = feature[name]
                 if len(str(cell)) > name_Length:
@@ -329,6 +362,14 @@ class VectorProcessing(BaseLayerProcesser):
 # · 
 # · <<
 # ∙ 
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>  Modification Methods  <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def layerFeatures_Slicer(self, input_slice):
+        self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}")
+        return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context).id(), self._context, self._feedback)
+
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
@@ -384,6 +425,7 @@ class VectorProcessing(BaseLayerProcesser):
     def RingBuffer(self, diameter: float, rings: int, invert: bool = False, overlap: int = 0, segments: int = 16, output="TEMPORARY_OUTPUT"):
         """
         Creates a multi-ring buffer with overlap logic based on a generated Class field \n
+        NOTE: Does not preserve attributes. Creates new CLASS Field. \n
         :param input: TypeVectorPoint | TypeVectorLine
         :param diameter: Total Diameter (map units)
         :param rings: Number of donut rings
@@ -540,7 +582,7 @@ class RasterProcessing(BaseLayerProcesser):
         self._feedback = feedback
         self._raster = BaseLayerProcesser(input_raster, self._context, self._feedback)
     
-    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], Output: int = 0):
+    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], output: str | int = 0):
         _output = self._raster.ProcessingOutput(
             processing.run(
                 algorname,
@@ -549,10 +591,13 @@ class RasterProcessing(BaseLayerProcesser):
                 context=self._context,
                 feedback=self._feedback
             ),
-            Output=Output
+            output=output
         )
-
-        return RasterProcessing(_output, self._context, self._feedback)
+        
+        if not _output:
+            return self
+        else:
+            return RasterProcessing(_output, self._context, self._feedback)
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
@@ -650,6 +695,7 @@ class RasterProcessing(BaseLayerProcesser):
 
         return VectorProcessing(_output, self._context, self._feedback)
 
+    #======================================================#
 
     def __getattr__(self, name):
         return getattr(self._raster, name)
