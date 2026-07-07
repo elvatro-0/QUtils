@@ -267,7 +267,7 @@ class BaseLayerProcesser(FlexibleMapLayer):
         _string = QgsProcessingUtils.mapLayerFromString(input, self._context)
         return isinstance(_string, QgsMapLayer)
 
-    #output can be specified by the position of the layer pointer str in the processing output dict, or by the spcefic keys name.
+    #output can be specified by the position of the layer pointer str in the processing output dict, or by the spcefic keys name str.
     def ProcessingOutput(self, processdict: dict, output: str | int = 0) -> str | None:
         if isinstance(output, str):
             if output not in processdict.keys():
