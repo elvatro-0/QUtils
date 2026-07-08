@@ -51,6 +51,11 @@ from qgis.core import(
     QgsFeatureIterator,
     QgsFeatureRequest,
     QgsProcessingException,
+    QgsRasterBandStats
+)
+from qgis.analysis import(
+    QgsRasterCalculatorEntry,
+    QgsRasterCalculator
 )
 from qgis import processing
 from typing import TYPE_CHECKING, Union
@@ -63,12 +68,13 @@ import functools, inspect, traceback
 
 #I want error messages to look pretty
 class QUtilsExceptions(QgsProcessingException):
-    def __init__(self, message: str = None):
+    def __init__(self, message: str = None, feedback: QgsProcessingFeedback = None):
         super().__init__(message)
         self.message = "" if message == None else message
+        self._feedback = feedback
     @staticmethod
-    def CriticalError(message: str = None):
-        raise QUtilsExceptions(message)
+    def CriticalError(message: str = None, feedback: QgsProcessingFeedback = None):
+        raise QUtilsExceptions(message, feedback)
 
     def ErrorHandling(func):
         @functools.wraps(func)
@@ -76,11 +82,14 @@ class QUtilsExceptions(QgsProcessingException):
             try:
                 return func(*args, **kwargs)
             except QUtilsExceptions as _except:
-                feedback = None
-                for fb in inspect.signature(func).bind(*args, **kwargs).arguments.values():
-                    if isinstance(fb, QgsProcessingFeedback):
-                        feedback = fb
-                        break
+                if _except._feedback:
+                    feedback = None
+                    for fb in inspect.signature(func).bind(*args, **kwargs).arguments.values():
+                        if isinstance(fb, QgsProcessingFeedback):
+                            feedback = fb
+                            break
+                else:
+                    feedback = _except._feedback
 
                 feedback.reportError(
                 "\n QUtils Critical Error\n"
@@ -103,6 +112,8 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     """
     Applies a three component slicing rule to a list of objects, a QgsFeatureIterator, or a QgsVectorLayer, returning a filtered List, QgsFeatureIterator, or QgsVectorLayer. \n
     *because the native slice is a bit rubbish* \n
+    NOTE: if your input is QgsFeatures (QgsFeatureIterator or QgsVectorLayer), the fid is the positional int, but for an accurate output you must subtract 1 on
+    the desired fids ints in the input_slice as fids are 1-based, and the slicing logic is 0-based. The output will return the correct 1-based feature ids after slicing logic.\n
     :param input_list: List of objects to slice (supports QgsFeatureIterator, and QgsVectorLayer). QgsVectorLayer as input slices the layers features.
     :param feedback: QgsProcessingFeedback object for error and warning reporting.
     :param input_slice: Tuple defining slicing behaviour: \n
@@ -255,7 +266,6 @@ class FlexibleMapLayer:     #this is my baby ♡
     def __getattr__(self, name):
         return getattr(QgsProcessingUtils.mapLayerFromString(self._pointer, self._context), name)
 
-@QUtilsExceptions.ErrorHandling
 class BaseLayerProcesser(FlexibleMapLayer):
     def __init__(self, input_pointer: str, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
         super().__init__(input_pointer, context)
@@ -267,11 +277,12 @@ class BaseLayerProcesser(FlexibleMapLayer):
         _string = QgsProcessingUtils.mapLayerFromString(input, self._context)
         return isinstance(_string, QgsMapLayer)
 
-    #output can be specified by the position of the layer pointer str in the processing output dict, or by the spcefic keys name str.
+    #output can be specified by the position of the layer pointer str in the processing output dict, or by the spcefic keys name.
+    @QUtilsExceptions.ErrorHandling
     def ProcessingOutput(self, processdict: dict, output: str | int = 0) -> str | None:
         if isinstance(output, str):
             if output not in processdict.keys():
-                QUtilsExceptions.CriticalError(f"output {output} does not exist")
+                QUtilsExceptions.CriticalError(f"output {output} does not exist", self._feedback)
             elif not self.is_pointerStr(processdict[output]):
                 self._feedback.pushWarning(f"output {output} is not pointer string.")
                 self._feedback.pushInfo(f"{output}: {processdict[output]}")
@@ -284,6 +295,9 @@ class BaseLayerProcesser(FlexibleMapLayer):
                 if self.is_pointerStr(_value):
                     _return.append(_value)
             return _return[output]
+
+    def forceMapLayer(self):
+        return QgsProcessingUtils.mapLayerFromString(str(self._pointer), self._context)
     
     #roses are red, I like mantle wedge depletion-
     def addLayerToLoadOnCompletion(self, output_name: str):
@@ -598,6 +612,46 @@ class RasterProcessing(BaseLayerProcesser):
             return self
         else:
             return RasterProcessing(_output, self._context, self._feedback)
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>     Debug Methods     <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def peak(self, bins: int, band: int = 1):
+        minValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue
+        maxValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).maximumValue
+        binSizes = (maxValue - minValue) / bins
+        histDict = {}
+        for i_bin in range(bins):
+            bin_min = minValue + i_bin * binSizes
+            bin_max = minValue + (i_bin + 1) * binSizes
+            norm_bin_max = bin_max  #prevents final bin being wider when drawn
+            norm_bin_max += 1 if i_bin == (bins - 1) else 0  #equivelant to <= {bin_max} for the last bin
+            rastercalc = QgsProcessingUtils().mapLayerFromString(
+                processing.run(
+                    "native:rastercalc", {      #gdal was being mean  ~◺˰◿~
+                        'LAYERS':[str(self._raster)],
+                        'EXPRESSION':f' if (  ( "{self._raster.name()}@{band}" >= {bin_min} )  AND  ( "{self._raster.name()}@{band}" < {norm_bin_max} ) , 1, 0 ) ',
+                        'EXTENT':None,
+                        'CELL_SIZE':None,
+                        'CRS':None,
+                        'CREATION_OPTIONS':None,
+                        'OUTPUT':'TEMPORARY_OUTPUT'
+                    },
+                    is_child_algorithm=True,
+                    context=self._context,
+                    feedback=QgsProcessingFeedback()        #silent feedback >.o
+                )['OUTPUT'],
+                self._context
+            )
+            histDict[(bin_min, bin_max)] = rastercalc.dataProvider().bandStatistics(1, QgsRasterBandStats.All).sum
+            self._context.temporaryLayerStore().removeMapLayer(rastercalc.id())
+
+        self._feedback.pushInfo(f"hist total: {sum(histDict.values())}")
+        self._feedback.pushInfo(str(histDict))
+        #this dict will be a nice pretty ascii histogram in the feedback console ~^.^~    ...eventually... 
+        return self
+
+        
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
