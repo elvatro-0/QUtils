@@ -68,7 +68,7 @@ import functools, inspect, traceback
 
 #I want error messages to look pretty
 class QUtilsExceptions(QgsProcessingException):
-    def __init__(self, message: str = None, feedback: QgsProcessingFeedback = None):
+    def __init__(self, message: str = None, feedback: QgsProcessingFeedback | None = None):
         super().__init__(message)
         self.message = "" if message == None else message
         self._feedback = feedback
@@ -82,7 +82,7 @@ class QUtilsExceptions(QgsProcessingException):
             try:
                 return func(*args, **kwargs)
             except QUtilsExceptions as _except:
-                if _except._feedback:
+                if _except._feedback is None:
                     feedback = None
                     for fb in inspect.signature(func).bind(*args, **kwargs).arguments.values():
                         if isinstance(fb, QgsProcessingFeedback):
@@ -141,7 +141,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
         return input_list
     elif isinstance(input_list, list):
         _count = len(input_list)
-    elif isinstance(input_list, QgsVectorLayer) or isinstance(input_list, QgsMapLayer) or isinstance(input_list, BaseLayerProcesser) or isinstance(input_list, FlexibleMapLayer) or isinstance(input_list, VectorProcessing):
+    elif isinstance(input_list, (QgsVectorLayer, QgsMapLayer, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing)):
         if context != None:
             _count = input_list.featureCount()
         else:
@@ -165,13 +165,15 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     _includeList = []
     if isinstance(input_slice, tuple) and len(input_slice) == 3:
         _include, _range, _except = input_slice
+        if _include is None and _range is None:
+            _includeList.extend([n for n, i in enumerate(input_list)])
         
         #=====Include=====#
         if _include == None:
             pass
         elif isinstance(_include, list):
             if _count - 1 < max(_include):
-                QUtilsExceptions.CriticalError(f"Slice Error: first object contains int higher then the objects bounds. Max int: {max(_include)} Object upper bound int: {_count - 1}")
+                QUtilsExceptions.CriticalError(f"Slice Error: first object contains int higher then the objects bounds. Max int: {max(_include)}, Object upper bound int: {_count - 1}")
             _includeList.extend(_include)
         else:
             QUtilsExceptions.CriticalError("Slice Error: First object must be list.")
@@ -189,9 +191,10 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                     #A neat way to extract the value if you add a comma after the int. E.g. (5,) == (5) -> (5, None); (-5,) == (-5) -> (0, 5)
                 start, stop = ind_range
                 start = 0 if start == None else start
+                start = _count - 1 if start > _count - 1 else start
                 stop = _count - 1 if stop == None or stop > _count - 1 else stop
                 if start > stop:
-                    QUtilsExceptions.CriticalError("Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges. The first value must be less then the second value.")
+                    QUtilsExceptions.CriticalError(f"Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges. The first value must be less then the second value. start: {start}, stop: {stop}")
                 _includeList.extend([r for r in range(start, stop + 1)])                
         else:
             QUtilsExceptions.CriticalError("Slice Error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.")
@@ -207,6 +210,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                         ind_except = (0, -ind_except[0]) if ind_except[0] < 0 else (ind_except[0], None)
                     estart, estop = ind_except
                     estart = 0 if estart == None else estart
+                    estart = _count - 1 if estart > _count - 1 else estart
                     estop = _count - 1 if estop == None or estop > _count - 1 else estop
                     r_except.extend([r for r in range(estart, estop + 1)])
                 elif isinstance(ind_except, int):
@@ -214,7 +218,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                 else:
                     QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
             if max(r_except) > _count - 1:
-                QUtilsExceptions.CriticalError("Slice Error: third object max value int is higher then the objects bounds.")
+                QUtilsExceptions.CriticalError(f"Slice Error: third object max value int is higher then the objects bounds. Max int: {max(r_except)}, Object upper bound int: {_count - 1}")
         else:
             QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
         
@@ -233,7 +237,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     if isinstance(input_list, list):
         return [input_list[n] for n in filterList]
 
-    if isinstance(input_list, QgsVectorLayer) or isinstance(input_list, QgsMapLayer) or isinstance(input_list, BaseLayerProcesser) or isinstance(input_list, FlexibleMapLayer) or isinstance(input_list, VectorProcessing):
+    if isinstance(input_list, (QgsVectorLayer, QgsMapLayer, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing)):
         filterList = sorted(check_featurenumber_1based)
         input_list.startEditing()
         input_list.selectByIds(filterList)
@@ -245,6 +249,20 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     if isinstance(input_list, QgsFeatureIterator):
         filterList = sorted(check_featurenumber_1based)
         return c_layer.getFeatures(QgsFeatureRequest().setFilterFids(filterList).setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)])))
+
+def PrettyNumber(number: int | float, ndigits: int = 3) -> str:
+    number = round(number) + 0.0 if abs(number) >= (1000 - 5 * 10 ** (2 - ndigits)) else number + 0.0
+    letter = ("", 1)
+    letter = ("k", 10 ** 3) if abs(number) >= 1000 else letter
+    letter = ("m", 10 ** 6) if abs(number) >= 1_000_000 else letter
+    letter = ("G", 10 ** 9) if abs(number) >= 1_000_000_000 else letter
+    letter = ("T", 10 ** 12) if abs(number) >= 10 ** 12 else letter
+    trunc_numb: float = (
+        round(number / letter[1], ndigits - len(str(int(abs(number) / letter[1]))))
+        if len(str(int(abs(number)))) >= ndigits else round(number, ndigits - len(str(int(abs(number)))))
+        )
+    trunc_numb = int(trunc_numb) if trunc_numb.is_integer() and len(str(int(abs(trunc_numb)))) >= ndigits else trunc_numb
+    return f"{number:.{ndigits - 1}e}" if abs(number) >= 10 ** 15 else f"{trunc_numb}{letter[0]}"
 
 #========================================================================================================#
 #------------------------------------------Proxy Base Wrappers-------------------------------------------#
@@ -261,7 +279,7 @@ class FlexibleMapLayer:     #this is my baby ♡
         return str(self._pointer)
 
     def __repr__(self):
-        return f"FlexibleVectorLayer({self._pointer!r})"
+        return f"FlexibleMapLayer({self._pointer!r})"
         
     def __getattr__(self, name):
         return getattr(QgsProcessingUtils.mapLayerFromString(self._pointer, self._context), name)
@@ -272,9 +290,9 @@ class BaseLayerProcesser(FlexibleMapLayer):
         self._feedback = feedback
 
     def is_pointerStr(self, input) -> bool:
-        if not isinstance(input, str):
+        if not isinstance(input, (str, FlexibleMapLayer)):
             return False
-        _string = QgsProcessingUtils.mapLayerFromString(input, self._context)
+        _string = QgsProcessingUtils.mapLayerFromString(str(input), self._context)
         return isinstance(_string, QgsMapLayer)
 
     #output can be specified by the position of the layer pointer str in the processing output dict, or by the spcefic keys name.
@@ -295,6 +313,12 @@ class BaseLayerProcesser(FlexibleMapLayer):
                 if self.is_pointerStr(_value):
                     _return.append(_value)
             return _return[output]
+
+    def ProcessingInput(self, parameters: dict[str, object]):
+        for key, val in parameters.items():
+            if self.is_pointerStr(val):
+                parameters[key] = str(val)
+        return parameters
 
     def forceMapLayer(self):
         return QgsProcessingUtils.mapLayerFromString(str(self._pointer), self._context)
@@ -325,7 +349,7 @@ class VectorProcessing(BaseLayerProcesser):
         _output = self._vector.ProcessingOutput(
             processing.run(
                 algorname,
-                parameters,
+                self.ProcessingInput(parameters),
                 is_child_algorithm=True,
                 context=self._context,
                 feedback=self._feedback
@@ -380,7 +404,7 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>  Modification Methods  <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def layerFeatures_Slicer(self, input_slice):
+    def layer_Slicer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]]):
         self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}")
         return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context).id(), self._context, self._feedback)
 
@@ -398,7 +422,7 @@ class VectorProcessing(BaseLayerProcesser):
         """
         return self.run(
             "native:fixgeometries", {
-                'INPUT': str(self._vector),
+                'INPUT': self._vector,
                 'METHOD': method,
                 'OUTPUT': output
             }
@@ -413,7 +437,7 @@ class VectorProcessing(BaseLayerProcesser):
         """
         return self.run(
             "native:dissolve", {
-                'INPUT':str(self._vector),
+                'INPUT':self._vector,
                 'FIELD': field,
                 'SEPARATE_DISJOINT': separate_disjoint,
                 'OUTPUT': output
@@ -425,7 +449,7 @@ class VectorProcessing(BaseLayerProcesser):
         """
         return self.run(
             "native:smoothgeometry", {
-                'INPUT':str(self._vector),
+                'INPUT':self._vector,
                 'ITERATIONS':iterations,
                 'OFFSET':offset,
                 'MAX_ANGLE':max_angle,
@@ -454,7 +478,7 @@ class VectorProcessing(BaseLayerProcesser):
         """
         return self.run(
             "script:Ring_Buffer", {
-                'INPUT': str(self._vector),
+                'INPUT': self._vector,
                 'DIAMETER': diameter,
                 'RINGS': rings,
                 'INVERT': invert,
@@ -560,7 +584,7 @@ class FeatureProcessing:
     #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
     #-------------------------------------------------------#
 
-    def FeaturesToLayer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]]):
+    def FeaturesToLayer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]] = None):
         geomlist = ["MultiPoint", "MultiLineString", "MultiPolygon"] if self._feature.geometry().isMultipart() else ["Point", "LineString", "Polygon"]
         _layer = self._context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[self._feature.geometry().type()], "_FeatureToLayer_MEM_LAYER_", "memory"))
         _layer.startEditing()
@@ -600,7 +624,7 @@ class RasterProcessing(BaseLayerProcesser):
         _output = self._raster.ProcessingOutput(
             processing.run(
                 algorname,
-                parameters,
+                self.ProcessingInput(parameters),
                 is_child_algorithm=True,
                 context=self._context,
                 feedback=self._feedback
@@ -616,26 +640,27 @@ class RasterProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>>     Debug Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def peak(self, bins: int, band: int = 1):
-        minValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue
-        maxValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).maximumValue
+    def peak(self, bins: int, y_truncpercent: int = 100, minValue: float | None = None, maxValue: float | None = None, band: int = 1):
+        minValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue if minValue is None else minValue
+        maxValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).maximumValue if maxValue is None else maxValue
         binSizes = (maxValue - minValue) / bins
         histDict = {}
+        self._feedback.setProgress(1)
         for i_bin in range(bins):
             bin_min = minValue + i_bin * binSizes
             bin_max = minValue + (i_bin + 1) * binSizes
-            norm_bin_max = bin_max  #prevents final bin being wider when drawn
-            norm_bin_max += 1 if i_bin == (bins - 1) else 0  #equivelant to <= {bin_max} for the last bin
+            norm_bin_max = bin_max                           #prevents final bin being wider when drawn
+            norm_bin_max += 1 if i_bin == (bins - 1) else 0  #equivelant to <= {norm_bin_max} for the last bin
             rastercalc = QgsProcessingUtils().mapLayerFromString(
                 processing.run(
                     "native:rastercalc", {      #gdal was being mean  ~◺˰◿~
                         'LAYERS':[str(self._raster)],
                         'EXPRESSION':f' if (  ( "{self._raster.name()}@{band}" >= {bin_min} )  AND  ( "{self._raster.name()}@{band}" < {norm_bin_max} ) , 1, 0 ) ',
                         'EXTENT':None,
-                        'CELL_SIZE':None,
-                        'CRS':None,
-                        'CREATION_OPTIONS':None,
-                        'OUTPUT':'TEMPORARY_OUTPUT'
+                        'CELL_SIZE':None,                               #would you rather i scan the entire raster pixel by pixel?
+                        'CRS':None,                                     #or use numpy and lose the robustness of native processing overhead validations?
+                        'CREATION_OPTIONS':None,                        #That processing overhead isnt doing nothing.
+                        'OUTPUT':'TEMPORARY_OUTPUT'                     #It's a debugging tool... reliability is more important
                     },
                     is_child_algorithm=True,
                     context=self._context,
@@ -645,13 +670,60 @@ class RasterProcessing(BaseLayerProcesser):
             )
             histDict[(bin_min, bin_max)] = rastercalc.dataProvider().bandStatistics(1, QgsRasterBandStats.All).sum
             self._context.temporaryLayerStore().removeMapLayer(rastercalc.id())
+            self._feedback.setProgress((100 / bins) * (i_bin + 1))
+            if self._feedback.isCanceled():
+                raise QgsProcessingException("Cancelled")
 
-        self._feedback.pushInfo(f"hist total: {sum(histDict.values())}")
-        self._feedback.pushInfo(str(histDict))
-        #this dict will be a nice pretty ascii histogram in the feedback console ~^.^~    ...eventually... 
-        return self
-
+        y_bins = 29   #number of lines
+        maxsum = int(max(histDict.values()) * (y_truncpercent / 100))
+        y_bins = maxsum if maxsum < y_bins else y_bins
+        y_bins += 1 if y_bins == 0 else 0
+        y_Sizes = maxsum / y_bins
+        next_min = maxsum - y_Sizes
+        linestring = ""
+        linestring += f"{int(maxsum + y_Sizes)}│" + "".join(["#" if value >= (maxsum + y_Sizes) else "·" for value in histDict.values()]) + f"\n"
+        linestring += f"{maxsum}│" + "".join(["#" if value >= maxsum else "·" for value in histDict.values()]) + f"\n"
+        for y_i in range(y_bins):
+            y_min = next_min if next_min > 0 else 0
+            next_min = y_min - y_Sizes
+            linestring += f"{'·' * (len(str(maxsum)) - len(str(int(y_min))))}{int(y_min)}│"
+            linestring += "".join(["#" if value > y_min else "·" for value in histDict.values()]) + f"\n"
         
+        #All this.. just for the x-axis ~>.<~
+        x_pad = bins + 1 + (len(PrettyNumber(minValue, 3)) % 2) - len(PrettyNumber(minValue, 3) + PrettyNumber(maxValue)) + (len(PrettyNumber(maxValue, 3)) // 2)
+        x_list = [minValue, maxValue]
+        for x_i in range(x_pad):
+            hold_list = []
+            for v_i in range(len(x_list) - 1):
+                pad_remain = (x_pad - (5 * len(ListSlicer(x_list, (None, None, [0, len(x_list) - 1]), self._feedback)))) // (len(x_list) - 1)
+                if pad_remain < 13: # 8(4 spaces between labels) + 5(max width of labels)
+                    _break = True
+                    break
+                _break = False
+                hold_list.append((x_list[v_i] + x_list[v_i + 1]) / 2)
+            x_list.extend(hold_list)
+            x_list.sort()
+            if _break:
+                break
+        mid_list = ListSlicer(x_list, (None, None, [0, len(x_list) - 1]), self._feedback)
+        pad_subtraction = ((x_pad - (len(mid_list)) * 5) // (len(mid_list) + 1))
+        remainder = (x_pad - 5 * len(mid_list)) % (len(mid_list) + 1)
+        rem_binlist = [1 for i in range(remainder)]
+        for i in range(1, len(mid_list) - remainder + 1, 2):
+            rem_binlist.insert(i, 0) if len(mid_list) > 1 else None
+        rem_binlist.extend([0 for i in range(len(mid_list) - len(rem_binlist))])
+        rem_binlist.reverse()
+        mid_labels = "".join(
+            [f"{'·' * pad_subtraction}{'·' * ((5 - (len(PrettyNumber(value, 3)))) // 2)}{PrettyNumber(value, 3)}{'·' * ((5 - len(PrettyNumber(value, 3))) // ((len(PrettyNumber(value, 3)) % 2) + 1))}{'·' * rem_binlist[i]}"
+             for i, value in enumerate(mid_list)]
+            )
+        mid_labels = f"{'·' * (x_pad - pad_subtraction)}" if len(mid_list) == 0 else mid_labels
+        linestring += f"{'·' * (len(str(maxsum)) - (len(PrettyNumber(minValue, 3)) % 2))}{PrettyNumber(minValue, 3)}{mid_labels}{'·' * pad_subtraction}{PrettyNumber(maxValue, 3)}"
+
+        self._feedback.pushCommandInfo(linestring)
+        return self
+# ¯ <
+# ∟ ?
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
@@ -678,8 +750,8 @@ class RasterProcessing(BaseLayerProcesser):
         """
         return self.run(
             "gdal:cliprasterbymasklayer", {
-                'INPUT': str(self._raster),
-                'MASK': str(mask),
+                'INPUT': self._raster,
+                'MASK': mask,
                 'SOURCE_CRS':source_crs,
                 'TARGET_CRS':target_crs,
                 'TARGET_EXTENT':target_extent,
@@ -711,7 +783,7 @@ class RasterProcessing(BaseLayerProcesser):
         """
         return self.run(
             "gdal:cliprasterbyextent", {
-                'INPUT':str(self._raster),
+                'INPUT':self._raster,
                 'PROJWIN':clipping_extent,
                 'OVERCRS':override_crs,
                 'NODATA':nodata,
