@@ -51,7 +51,10 @@ from qgis.core import(
     QgsFeatureIterator,
     QgsFeatureRequest,
     QgsProcessingException,
-    QgsRasterBandStats
+    QgsRasterBandStats,
+    QgsRasterDataProvider,
+    QgsRasterBlockFeedback,
+    QgsVectorDataProvider
 )
 from qgis.analysis import(
     QgsRasterCalculatorEntry,
@@ -59,7 +62,7 @@ from qgis.analysis import(
 )
 from qgis import processing
 from typing import TYPE_CHECKING, Union
-import functools, inspect, traceback
+import functools, inspect, traceback, math
 
 
 #========================================================================================================#
@@ -143,7 +146,14 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
         _count = len(input_list)
     elif isinstance(input_list, (QgsVectorLayer, QgsMapLayer, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing)):
         if context != None:
-            _count = input_list.featureCount()
+            _count = input_list.featureCount()                       #if gaps in fid lists weren't possible, this would be much simpler... ~⪖ ‸⪕~
+            geomlist = ["MultiPoint", "MultiLineString", "MultiPolygon"] if next(input_list.getFeatures()).geometry().isMultipart() else ["Point", "LineString", "Polygon"]
+            c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[input_list.geometryType()], "_ListSlicer_MEM_LAYER_", "memory"))
+            c_layer.startEditing()
+            c_layer.setCrs(input_list.crs())
+            c_layer.dataProvider().addAttributes(input_list.fields())
+            c_layer.dataProvider().addFeatures(input_list.getFeatures())
+            c_layer.commitChanges()
         else:
             QUtilsExceptions.CriticalError("Slice Error: Context required for QgsVectorLayer as input")
     elif isinstance(input_list, QgsFeatureIterator):
@@ -239,12 +249,12 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
 
     if isinstance(input_list, (QgsVectorLayer, QgsMapLayer, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing)):
         filterList = sorted(check_featurenumber_1based)
-        input_list.startEditing()
-        input_list.selectByIds(filterList)
-        input_list.invertSelection()
-        input_list.deleteSelectedFeatures(QgsVectorLayer().DeleteContext(True, context.project()))
-        input_list.commitChanges()
-        return input_list
+        c_layer.startEditing()
+        c_layer.selectByIds(filterList)
+        c_layer.invertSelection()
+        c_layer.deleteSelectedFeatures(QgsVectorLayer().DeleteContext(True, context.project()))
+        c_layer.commitChanges()
+        return c_layer
     
     if isinstance(input_list, QgsFeatureIterator):
         filterList = sorted(check_featurenumber_1based)
@@ -644,37 +654,38 @@ class RasterProcessing(BaseLayerProcesser):
         minValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue if minValue is None else minValue
         maxValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).maximumValue if maxValue is None else maxValue
         binSizes = (maxValue - minValue) / bins
-        histDict = {}
+        self._raster.dataProvider().setNoDataValue(band, -9999) if math.isnan(self._raster.dataProvider().sourceNoDataValue(band)) else None
+        NoData = self._raster.dataProvider().sourceNoDataValue(band)
         self._feedback.setProgress(1)
+        rastercalc = QgsProcessingUtils().mapLayerFromString(
+            processing.run(
+                "native:rastercalc", {      #gdal was being mean  ~◺˰◿~
+                    'LAYERS':[str(self._raster)],
+                    'EXPRESSION':f' if (  ( "{self._raster.name()}@{band}" < {minValue} )  OR  ( "{self._raster.name()}@{band}" > {maxValue} ) , {NoData}, "{self._raster.name()}@{band}" ) ',
+                    'EXTENT':None,
+                    'CELL_SIZE':None,
+                    'CRS':None,
+                    'CREATION_OPTIONS':None,
+                    'OUTPUT':'TEMPORARY_OUTPUT'
+                },
+                is_child_algorithm=True,
+                context=self._context,
+                feedback=QgsProcessingFeedback()    #silent feedback >.o
+            )['OUTPUT'],
+            self._context
+        )
+        histDict = {}
+        histogram = rastercalc.dataProvider().histogram(band, bins, minValue, maxValue, rastercalc.extent(), 0, includeOutOfRange=False).histogramVector
         for i_bin in range(bins):
+            value = histogram[i_bin]
             bin_min = minValue + i_bin * binSizes
             bin_max = minValue + (i_bin + 1) * binSizes
-            norm_bin_max = bin_max                           #prevents final bin being wider when drawn
-            norm_bin_max += 1 if i_bin == (bins - 1) else 0  #equivelant to <= {norm_bin_max} for the last bin
-            rastercalc = QgsProcessingUtils().mapLayerFromString(
-                processing.run(
-                    "native:rastercalc", {      #gdal was being mean  ~◺˰◿~
-                        'LAYERS':[str(self._raster)],
-                        'EXPRESSION':f' if (  ( "{self._raster.name()}@{band}" >= {bin_min} )  AND  ( "{self._raster.name()}@{band}" < {norm_bin_max} ) , 1, 0 ) ',
-                        'EXTENT':None,
-                        'CELL_SIZE':None,                               #would you rather i scan the entire raster pixel by pixel?
-                        'CRS':None,                                     #or use numpy and lose the robustness of native processing overhead validations?
-                        'CREATION_OPTIONS':None,                        #That processing overhead isnt doing nothing.
-                        'OUTPUT':'TEMPORARY_OUTPUT'                     #It's a debugging tool... reliability is more important
-                    },                                                  #also.. funny
-                    is_child_algorithm=True,
-                    context=self._context,
-                    feedback=QgsProcessingFeedback()        #silent feedback >.o
-                )['OUTPUT'],
-                self._context
-            )
-            histDict[(bin_min, bin_max)] = rastercalc.dataProvider().bandStatistics(1, QgsRasterBandStats.All).sum
-            self._context.temporaryLayerStore().removeMapLayer(rastercalc.id())
+            histDict[(bin_min, bin_max)] = value
             self._feedback.setProgress((100 / bins) * (i_bin + 1))
             if self._feedback.isCanceled():
                 raise QgsProcessingException("Cancelled")
-        self.histDict = histDict
-
+        setattr(self, f"histDict@{band}", histDict)
+        
         y_bins = 29   #number of lines
         maxsum = int(max(histDict.values()) * (y_truncpercent / 100))
         y_bins = maxsum if maxsum < y_bins else y_bins
@@ -732,11 +743,11 @@ class RasterProcessing(BaseLayerProcesser):
         binstring = "·".join([f"{number}" for number in binnolist])                                                         #101 for the same reason as 98
         linestring = f"\nBin Numbers\n{'·' * (len(str(maxsum)) + 1)}{binstring}\n" + linestring
 
-        self.histogram = linestring
+        setattr(self, f"histogram@{band}", linestring)
         if showTable:
             columns = bins // (22 + len(str(bins))) if bins // (22 + len(str(bins))) > 4 else 4
             linestring += f"\n \n{'=♡' * ((bins + len(str(maxsum)) + 1) // 2)}="
-            linestring += self.HistogramTable(columns, True)
+            linestring += self.HistogramTable(columns, band, True)
 
         self._feedback.pushInfo(f"{'=♡' * 35}=")
         self._feedback.pushCommandInfo(linestring)
@@ -745,11 +756,11 @@ class RasterProcessing(BaseLayerProcesser):
 # ¯ <
 # ∟ ?
 
-    def HistogramTable(self, columns: int = 4, returnstr: bool = False):
-        if "histDict" not in self.__dict__.keys():
-            self._feedback.pushWarning("HistogramTable Method requires histogram dictionary materialisation. Run peak() first.")
+    def HistogramTable(self, columns: int = 4, band: int = 1, returnstr: bool = False):
+        if f"histDict@{band}" not in self.__dict__.keys():
+            self._feedback.pushWarning("HistogramTable Method requires histogram dictionary materialisation of specified band. Run peak() first.")
             return self
-        dictlist = [(key, value) for key, value in self.histDict.items()]
+        dictlist = [(key, value) for key, value in getattr(self, f"histDict@{band}").items()]
         linestring = "\n \n"
         rows = len(dictlist) / columns
         for row in range(int(rows)):
