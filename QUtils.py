@@ -53,8 +53,8 @@ from qgis.core import(
     QgsProcessingException,
     QgsRasterBandStats,
     QgsRasterDataProvider,
-    QgsRasterBlockFeedback,
-    QgsVectorDataProvider
+    QgsVectorDataProvider,
+    QgsWkbTypes
 )
 from qgis.analysis import(
     QgsRasterCalculatorEntry,
@@ -108,6 +108,55 @@ class QUtilsExceptions(QgsProcessingException):
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
 
+#if deep layer cloning already existed, this would be much simpler... ~⪖ ‸⪕~
+def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, context: QgsProcessingContext, feedback: QgsProcessingFeedback, printfeedback: bool = True):
+    """Deep cloning returning a new layer"""
+    if isinstance(layer, str):
+        layer = QgsProcessingUtils().mapLayerFromString(layer, context) if BaseLayerProcesser(layer, context, feedback).is_pointerStr(layer) else QUtilsExceptions.CriticalError("input layer str is not layer pointer string.")
+    if isinstance(layer.dataProvider(), QgsRasterDataProvider):
+        clone = QgsProcessingUtils().mapLayerFromString(
+            processing.run(
+                "gdal:translate", {
+                    'INPUT':layer.id(),
+                    'TARGET_CRS':None,
+                    'NODATA':None,
+                    'COPY_SUBDATASETS':False,
+                    'CREATION_OPTIONS':None,
+                    'EXTRA':'',
+                    'DATA_TYPE':0,
+                    'OUTPUT':'TEMPORARY_OUTPUT'
+                },
+                is_child_algorithm=True,
+                context=context,
+                feedback=QgsProcessingFeedback()
+            )['OUTPUT'],
+            context
+        )
+        clone.setName(f"{layer.name()}_clone")
+        feedback.pushInfo(f"Result: {clone.name()}_{clone.id()}") if printfeedback else None
+    if isinstance(layer.dataProvider(), QgsVectorDataProvider):
+        clone = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(QgsWkbTypes().displayString(next(layer.getFeatures()).geometry().wkbType()), f"{layer.name()}_clone", "memory"))
+        clone.startEditing()
+        clone.setCrs(layer.crs())
+        clone.dataProvider().addAttributes(layer.fields())
+        clone.dataProvider().addFeatures(layer.getFeatures())
+        clone.setAbstract(layer.abstract())
+        clone.setBlendMode(layer.blendMode())
+        clone.setCustomProperties(layer.customProperties())
+        clone.setBlendMode(layer.blendMode())
+        clone.setKeywordList(layer.keywordList())
+        clone.setRenderer(layer.renderer().clone())
+        clone.setMaximumScale(layer.maximumScale())
+        clone.setMetadata(layer.metadata())
+        clone.setMetadataUrl(layer.metadataUrl())
+        clone.setMinimumScale(layer.minimumScale())
+        clone.setOpacity(layer.opacity())
+        clone.setScaleBasedVisibility(layer.hasScaleBasedVisibility())
+        clone.commitChanges()
+        feedback.pushInfo(f"Result: {clone.id()}") if printfeedback else None
+        
+    return clone.id() if isinstance(layer, (str, FlexibleMapLayer, BaseLayerProcesser)) else clone
+
 #and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
 #That performance loss is on you for being weird.
 @QUtilsExceptions.ErrorHandling
@@ -116,7 +165,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     Applies a three component slicing rule to a list of objects, a QgsFeatureIterator, or a QgsVectorLayer, returning a filtered List, QgsFeatureIterator, or QgsVectorLayer. \n
     *because the native slice is a bit rubbish* \n
     NOTE: if your input is QgsFeatures (QgsFeatureIterator or QgsVectorLayer), the fid is the positional int, but for an accurate output you must subtract 1 on
-    the desired fids ints in the input_slice as fids are 1-based, and the slicing logic is 0-based. The output will return the correct 1-based feature ids after slicing logic.\n
+    the desired fids ints in the input_slice, as fids are 1-based and the slicing logic is 0-based. The output will return the correct 1-based feature ids after slicing logic.\n
     :param input_list: List of objects to slice (supports QgsFeatureIterator, and QgsVectorLayer). QgsVectorLayer as input slices the layers features.
     :param feedback: QgsProcessingFeedback object for error and warning reporting.
     :param input_slice: Tuple defining slicing behaviour: \n
@@ -134,7 +183,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                 Exclude:
                     - None -> no explicit exclusions
                     - list[int] -> explicit indicies to exclude
-                    - list[(start, stop)] -> range if indicies to exclulde (can be multiple ranges)
+                    - list[(start, stop)] -> range of indicies to exclulde (can be multiple ranges)
                     - Exclude range logic is consistant with Range param logic
                     - Note: Exclude ints override include (Include and Range) ints
     :return: Filtered list of objects, QgsFeatureIterator, or QgsVectorLayer
@@ -146,14 +195,8 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
         _count = len(input_list)
     elif isinstance(input_list, (QgsVectorLayer, QgsMapLayer, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing)):
         if context != None:
-            _count = input_list.featureCount()                       #if gaps in fid lists weren't possible, this would be much simpler... ~⪖ ‸⪕~
-            geomlist = ["MultiPoint", "MultiLineString", "MultiPolygon"] if next(input_list.getFeatures()).geometry().isMultipart() else ["Point", "LineString", "Polygon"]
-            c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[input_list.geometryType()], "_ListSlicer_MEM_LAYER_", "memory"))
-            c_layer.startEditing()
-            c_layer.setCrs(input_list.crs())
-            c_layer.dataProvider().addAttributes(input_list.fields())
-            c_layer.dataProvider().addFeatures(input_list.getFeatures())
-            c_layer.commitChanges()
+            _count = input_list.featureCount()
+            c_layer = CloneLayer(input_list, context, feedback)
         else:
             QUtilsExceptions.CriticalError("Slice Error: Context required for QgsVectorLayer as input")
     elif isinstance(input_list, QgsFeatureIterator):
@@ -419,6 +462,12 @@ class VectorProcessing(BaseLayerProcesser):
         return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context).id(), self._context, self._feedback)
 
     #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>     Layer Proesses     <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def Clone(self, printfeedback: bool = True):
+        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback), self._context, self._feedback)
+
+    #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def fixGeometries(self, method: int = 1, output="TEMPORARY_OUTPUT"):
@@ -654,14 +703,15 @@ class RasterProcessing(BaseLayerProcesser):
         minValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue if minValue is None else minValue
         maxValue: float = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).maximumValue if maxValue is None else maxValue
         binSizes = (maxValue - minValue) / bins
-        self._raster.dataProvider().setNoDataValue(band, -9999) if math.isnan(self._raster.dataProvider().sourceNoDataValue(band)) else None
-        NoData = self._raster.dataProvider().sourceNoDataValue(band)
+        rasterClone = self.Clone(False)
+        rasterClone.dataProvider().setNoDataValue(band, -999) if math.isnan(rasterClone.dataProvider().sourceNoDataValue(band)) else None
+        NoData = rasterClone.dataProvider().sourceNoDataValue(band)
         self._feedback.setProgress(1)
         rastercalc = QgsProcessingUtils().mapLayerFromString(
             processing.run(
                 "native:rastercalc", {      #gdal was being mean  ~◺˰◿~
-                    'LAYERS':[str(self._raster)],
-                    'EXPRESSION':f' if (  ( "{self._raster.name()}@{band}" < {minValue} )  OR  ( "{self._raster.name()}@{band}" > {maxValue} ) , {NoData}, "{self._raster.name()}@{band}" ) ',
+                    'LAYERS':[str(rasterClone)],
+                    'EXPRESSION':f' if (  ( "{rasterClone.name()}@{band}" < {minValue} )  OR  ( "{rasterClone.name()}@{band}" > {maxValue} ) , {NoData}, "{rasterClone.name()}@{band}" ) ',
                     'EXTENT':None,
                     'CELL_SIZE':None,
                     'CRS':None,
@@ -676,6 +726,7 @@ class RasterProcessing(BaseLayerProcesser):
         )
         histDict = {}
         histogram = rastercalc.dataProvider().histogram(band, bins, minValue, maxValue, rastercalc.extent(), 0, includeOutOfRange=False).histogramVector
+        self._context.temporaryLayerStore().removeMapLayer(rastercalc.id())
         for i_bin in range(bins):
             value = histogram[i_bin]
             bin_min = minValue + i_bin * binSizes
@@ -787,6 +838,12 @@ class RasterProcessing(BaseLayerProcesser):
         else:
             self._feedback.pushCommandInfo(linestring)
             return self
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>     Layer Proesses     <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def Clone(self, printfeedback: bool = True):
+        return RasterProcessing(CloneLayer(self._raster, self._context, self._feedback, printfeedback), self._context, self._feedback)
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
