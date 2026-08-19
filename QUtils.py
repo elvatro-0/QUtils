@@ -35,6 +35,7 @@ ll``````````````¯l6ggggggggggggl`*‡ll‡l````
 
 import qgis.core
 from qgis.core import(
+    Qgis,
     QgsProcessingParameterFeatureSource,
     QgsProcessingFeatureSource,
     QgsFeature,
@@ -46,6 +47,7 @@ from qgis.core import(
     QgsProcessingAlgorithm,
     QgsMapLayer,
     QgsFields,
+    QgsField,
     QgsRasterLayer,
     QgsCoordinateReferenceSystem,
     QgsFeatureIterator,
@@ -60,6 +62,8 @@ from qgis.analysis import(
     QgsRasterCalculatorEntry,
     QgsRasterCalculator
 )
+from qgis.PyQt.QtCore import QVariant
+from PyQt5 import QtCore
 from qgis import processing
 from typing import TYPE_CHECKING, Union
 import functools, inspect, traceback, math
@@ -103,10 +107,57 @@ class QUtilsExceptions(QgsProcessingException):
                 raise QgsProcessingException(f"{_except.message}\n{'=♡'*35}=\n")
         return stack_tracer
 
+#========================================================================================================#
+#-----------------------------------------------Storage--------------------------------------------------#
+#===============================================>      <=================================================#
+
+class FieldType:
+    string = QVariant.String
+    int = QVariant.Int
+    int64 = QVariant.LongLong
+    double = QVariant.Double
+    date = QVariant.Date
+    time = QVariant.Time
+    datetime = QVariant.DateTime
+    bool = QVariant.Bool
+    bytearray = QVariant.ByteArray
+    json = QVariant.Map
+    array = QVariant.List
+    unset = QVariant.Invalid
 
 #========================================================================================================#
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
+
+def NewVectorLayer(type: Qgis.WkbType | str, context: QgsProcessingContext, name: str = "new_Vector") -> QgsVectorLayer:
+    wkbtype = QgsWkbTypes().parseType(type) if isinstance(type, str) else type
+    return context.temporaryLayerStore().addMapLayer(QgsVectorLayer(QgsWkbTypes().displayString(wkbtype), name, "memory"))
+
+def NewFields(fields: tuple[str, str | QtCore.QMetaType.Type] | list[tuple[str, str | QtCore.QMetaType.Type]]):
+    """
+    Generates a populated QgsFields object\n
+    :param fields: Tuple or list of tuples containing the name of the field and it's field type.\n
+        ("*name*", *FieldType*)\n
+        Field type can be a QMetaType.Type (E.g. QgsField.type() return), QVariant.*Type*, or a string representation:\n
+            - "string" -> QVariant.String
+            - "int" -> QVariant.Int
+            - "int64" -> QVariant.LongLong
+            - "double" -> QVariant.Double
+            - "date" -> QVariant.Date
+            - "time" -> QVariant.Time
+            - "datetime" -> QVariant.DateTime
+            - "bool" -> QVariant.Bool
+            - "bytearray" -> QVariant.ByteArray
+            - "json" -> QVariant.Map
+            - "array" -> QVariant.List
+            - "unset" -> QVariant.Invalid
+    """
+    fields = [fields] if isinstance(fields, tuple) else fields
+    _qgsfields = QgsFields()
+    for field in fields:
+        field = (field[0], getattr(FieldType, field[1])) if isinstance(field[1], str) else field
+        _qgsfields.append(QgsField(field[0], field[1]))
+    return _qgsfields
 
 #if deep layer cloning already existed, this would be much simpler... ~⪖ ‸⪕~
 def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, context: QgsProcessingContext, feedback: QgsProcessingFeedback, printfeedback: bool = True):
@@ -135,7 +186,7 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
         clone.setName(f"{layer.name()}_clone")
         feedback.pushInfo(f"Result: {clone.name()}_{clone.id()}") if printfeedback else None
     if isinstance(layer.dataProvider(), QgsVectorDataProvider):
-        clone = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(QgsWkbTypes().displayString(next(layer.getFeatures()).geometry().wkbType()), f"{layer.name()}_clone", "memory"))
+        clone = NewVectorLayer(next(layer.getFeatures()).geometry().wkbType(), context, f"{layer.name()}_clone")
         clone.startEditing()
         clone.setCrs(layer.crs())
         clone.dataProvider().addAttributes(layer.fields())
@@ -154,7 +205,7 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
         clone.setScaleBasedVisibility(layer.hasScaleBasedVisibility())
         clone.commitChanges()
         feedback.pushInfo(f"Result: {clone.id()}") if printfeedback else None
-        
+
     return clone.id() if isinstance(layer, (str, FlexibleMapLayer, BaseLayerProcesser)) else clone
 
 #and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
@@ -201,10 +252,9 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
             QUtilsExceptions.CriticalError("Slice Error: Context required for QgsVectorLayer as input")
     elif isinstance(input_list, QgsFeatureIterator):
         if context != None:
-            first = next(input_list)
+            first: QgsFeature = next(input_list)
             input_list.rewind()
-            geomlist = ["MultiPoint", "MultiLineString", "MultiPolygon"] if first.geometry().isMultipart() else ["Point", "LineString", "Polygon"]
-            c_layer = context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[first.geometry().type()], "_ListSlicer_MEM_LAYER_", "memory"))
+            c_layer = NewVectorLayer(first.geometry().wkbType(), context, "_ListSlicer_MEM_LAYER_")
             c_layer.startEditing()
             c_layer.setCrs(context.project().crs())
             c_layer.dataProvider().addAttributes(first.fields())
@@ -219,7 +269,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     if isinstance(input_slice, tuple) and len(input_slice) == 3:
         _include, _range, _except = input_slice
         if _include is None and _range is None:
-            _includeList.extend([n for n, i in enumerate(input_list)])
+            _includeList.extend(range(_count))
         
         #=====Include=====#
         if _include == None:
@@ -248,7 +298,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                 stop = _count - 1 if stop == None or stop > _count - 1 else stop
                 if start > stop:
                     QUtilsExceptions.CriticalError(f"Slice Error: second object must be a tuple containing a range of two values or a list of tuple ranges. The first value must be less then the second value. start: {start}, stop: {stop}")
-                _includeList.extend([r for r in range(start, stop + 1)])                
+                _includeList.extend(range(start, stop + 1))                
         else:
             QUtilsExceptions.CriticalError("Slice Error: second object must be tuple containing a range of two values or a list of tuple ranges. None as first or second value evaluates as either highest or lowest value.")
 
@@ -265,11 +315,11 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                     estart = 0 if estart == None else estart
                     estart = _count - 1 if estart > _count - 1 else estart
                     estop = _count - 1 if estop == None or estop > _count - 1 else estop
-                    r_except.extend([r for r in range(estart, estop + 1)])
+                    r_except.extend(range(estart, estop + 1))
                 elif isinstance(ind_except, int):
                     r_except.append(ind_except)
                 else:
-                    QUtilsExceptions.CriticalError("Slice Error: third object must be None or list of ints or tuple ranges")
+                    QUtilsExceptions.CriticalError("Slice Error: third object must be None, or list of ints or of tuple ranges")
             if max(r_except) > _count - 1:
                 QUtilsExceptions.CriticalError(f"Slice Error: third object max value int is higher then the objects bounds. Max int: {max(r_except)}, Object upper bound int: {_count - 1}")
         else:
@@ -343,7 +393,7 @@ class BaseLayerProcesser(FlexibleMapLayer):
         self._feedback = feedback
 
     def is_pointerStr(self, input) -> bool:
-        if not isinstance(input, (str, FlexibleMapLayer)):
+        if not isinstance(input, (str, FlexibleMapLayer, BaseLayerProcesser, VectorProcessing, RasterProcessing)):
             return False
         _string = QgsProcessingUtils.mapLayerFromString(str(input), self._context)
         return isinstance(_string, QgsMapLayer)
@@ -519,33 +569,48 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def RingBuffer(self, diameter: float, rings: int, invert: bool = False, overlap: int = 0, segments: int = 16, output="TEMPORARY_OUTPUT"):
+    def RingBuffer(self, diameter: float, rings: int, invert: bool = False, segments: int = 16):
         """
         Creates a multi-ring buffer with overlap logic based on a generated Class field \n
         NOTE: Does not preserve attributes. Creates new CLASS Field. \n
-        :param input: TypeVectorPoint | TypeVectorLine
         :param diameter: Total Diameter (map units)
         :param rings: Number of donut rings
         :param invert: True = Increasing class value inwards (inner ring as highest value) \n
                        False = increases class value outwards (Outer ring as highest value)
-        :param overlap: Overlap Resolution: \n
-                        0 = Lower value overrides
-                        1 = Higher value overrides
         :param segments: Number of line segments to approximate a quarter circle when creating rounded offsets
         :param output: Output file path string | Default Temporary Memory Output
         :return: VectorProcessing(FlexibleVectorLayer) Object
         """
-        return self.run(
-            "script:Ring_Buffer", {
-                'INPUT': self._vector,
-                'DIAMETER': diameter,
-                'RINGS': rings,
-                'INVERT': invert,
-                'OVERLAP': overlap,
-                'SEGMENTS': segments,
-                'OUTPUT': output
-            }
-        )
+
+        ringsize = diameter / 2 / rings
+        geomlist = []
+        for buffer_i in range(1, rings + 1):
+            for i, feature in enumerate(self._vector.getFeatures()):
+                buffer: QgsGeometry = feature.geometry().buffer(ringsize * buffer_i, segments)
+                buffer_combined = buffer if i == 0 else buffer_combined.combine(buffer)
+                if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
+            self._feedback.setProgress((100 / rings) * buffer_i / 2)
+            geomlist.append((buffer_combined, rings - buffer_i + 1 if invert else buffer_i))
+        
+        fields = NewFields(("CLASS", FieldType.int))
+        layer = NewVectorLayer("MultiPolygon" , self._context, "Ring_Buffer")
+        layer.startEditing()
+        layer.setCrs(self._vector.crs())
+        layer.dataProvider().addAttributes(fields)
+
+        geomlist.reverse()
+        for geom_i in range(rings):
+            ring = geomlist[geom_i][0].difference(geomlist[geom_i + 1][0]) if geom_i != rings - 1 else geomlist[geom_i][0]
+            feature = QgsFeature()
+            feature.setGeometry(ring)
+            feature.setFields(fields)
+            feature.setAttribute("CLASS", geomlist[geom_i][1])
+            layer.dataProvider().addFeature(feature)
+            self._feedback.setProgress(((100 / rings) * (geom_i + 1) / 2) + 50)
+        layer.commitChanges()
+
+        return VectorProcessing(layer.id(), self._context, self._feedback)
+
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
@@ -644,8 +709,7 @@ class FeatureProcessing:
     #-------------------------------------------------------#
 
     def FeaturesToLayer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]] = None):
-        geomlist = ["MultiPoint", "MultiLineString", "MultiPolygon"] if self._feature.geometry().isMultipart() else ["Point", "LineString", "Polygon"]
-        _layer = self._context.temporaryLayerStore().addMapLayer(QgsVectorLayer(geomlist[self._feature.geometry().type()], "_FeatureToLayer_MEM_LAYER_", "memory"))
+        _layer = NewVectorLayer(self._feature.geometry().wkbType(), self._context, "_FeatureToLayer_MEM_LAYER_")
         _layer.startEditing()
         _layer.setCrs(self._context.project().crs())
         _layer.dataProvider().addAttributes(self._feature.fields())
@@ -735,6 +799,7 @@ class RasterProcessing(BaseLayerProcesser):
             self._feedback.setProgress((100 / bins) * (i_bin + 1))
             if self._feedback.isCanceled():
                 raise QgsProcessingException("Cancelled")
+        self.histDict = {} #for IDE
         setattr(self, f"histDict@{band}", histDict)
         
         y_bins = 29   #number of lines
@@ -794,6 +859,7 @@ class RasterProcessing(BaseLayerProcesser):
         binstring = "·".join([f"{number}" for number in binnolist])                                                         #101 for the same reason as 98
         linestring = f"\nBin Numbers\n{'·' * (len(str(maxsum)) + 1)}{binstring}\n" + linestring
 
+        self.histogram = ""
         setattr(self, f"histogram@{band}", linestring)
         if showTable:
             columns = bins // (22 + len(str(bins))) if bins // (22 + len(str(bins))) > 4 else 4
@@ -809,7 +875,7 @@ class RasterProcessing(BaseLayerProcesser):
 
     def HistogramTable(self, columns: int = 4, band: int = 1, returnstr: bool = False):
         if f"histDict@{band}" not in self.__dict__.keys():
-            self._feedback.pushWarning("HistogramTable Method requires histogram dictionary materialisation of specified band. Run peak() first.")
+            self._feedback.pushWarning("HistogramTable Method requires histogram materialisation of specified band. Run peak() first.")
             return self
         dictlist = [(key, value) for key, value in getattr(self, f"histDict@{band}").items()]
         linestring = "\n \n"
