@@ -56,7 +56,9 @@ from qgis.core import(
     QgsRasterBandStats,
     QgsRasterDataProvider,
     QgsVectorDataProvider,
-    QgsWkbTypes
+    QgsWkbTypes,
+    QgsRectangle,
+    QgsSpatialIndex
 )
 from qgis.analysis import(
     QgsRasterCalculatorEntry,
@@ -66,8 +68,8 @@ from qgis.PyQt.QtCore import QVariant
 from PyQt5 import QtCore
 from qgis import processing
 from typing import TYPE_CHECKING, Union
+from pathlib import Path
 import functools, inspect, traceback, math
-
 
 #========================================================================================================#
 #---------------------------------------------Error Handler----------------------------------------------#
@@ -393,8 +395,6 @@ class BaseLayerProcesser(FlexibleMapLayer):
         self._feedback = feedback
 
     def is_pointerStr(self, input) -> bool:
-        if not isinstance(input, (str, FlexibleMapLayer, BaseLayerProcesser, VectorProcessing, RasterProcessing)):
-            return False
         _string = QgsProcessingUtils.mapLayerFromString(str(input), self._context)
         return isinstance(_string, QgsMapLayer)
 
@@ -419,7 +419,16 @@ class BaseLayerProcesser(FlexibleMapLayer):
 
     def ProcessingInput(self, parameters: dict[str, object]):
         for key, val in parameters.items():
-            if self.is_pointerStr(val):
+            if val == "__self__":
+                parameters[key] = self._pointer
+            elif isinstance(val, list):
+                _list = []
+                for _val in val:
+                    _val = self._pointer if _val == "__self__" else _val
+                    _val = str(_val) if self.is_pointerStr(_val) else _val
+                    _list.append(_val)
+                parameters[key] = _list
+            elif self.is_pointerStr(val):
                 parameters[key] = str(val)
         return parameters
 
@@ -448,14 +457,15 @@ class VectorProcessing(BaseLayerProcesser):
         self._feedback = feedback
         self._vector = BaseLayerProcesser(input_vector, self._context, self._feedback)
     
-    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], output: str | int = 0):
+    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], output: str | int = 0, printfeedback: bool = True):
+        if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
         _output = self._vector.ProcessingOutput(
             processing.run(
                 algorname,
                 self.ProcessingInput(parameters),
                 is_child_algorithm=True,
                 context=self._context,
-                feedback=self._feedback
+                feedback=self._feedback if printfeedback else QgsProcessingFeedback()
             ),
             output=output
         )
@@ -507,8 +517,8 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>  Modification Methods  <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def layer_Slicer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]]):
-        self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}")
+    def layer_Slicer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], printfeedback=True):
+        self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}") if printfeedback else None
         return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context).id(), self._context, self._feedback)
 
     #-------------------------------------------------------#
@@ -520,7 +530,7 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def fixGeometries(self, method: int = 1, output="TEMPORARY_OUTPUT"):
+    def fixGeometries(self, method: int = 1, output="TEMPORARY_OUTPUT", printfeedback=True):
         """
         Native Fix geometries Process \n
         :param method: Repair method: \n
@@ -534,9 +544,10 @@ class VectorProcessing(BaseLayerProcesser):
                 'INPUT': self._vector,
                 'METHOD': method,
                 'OUTPUT': output
-            }
+            },
+            printfeedback=printfeedback
         )
-    def Dissolve(self, field: QgsFields = [], separate_disjoint: bool = False, output="TEMPORARY_OUTPUT"):
+    def Dissolve(self, field: QgsFields = [], separate_disjoint: bool = False, output="TEMPORARY_OUTPUT", printfeedback=True):
         """
         Native Dissolve Process \n
         :param field: QgsFields list of attributes | Blank list will dissolve all atrtibute fields
@@ -550,9 +561,10 @@ class VectorProcessing(BaseLayerProcesser):
                 'FIELD': field,
                 'SEPARATE_DISJOINT': separate_disjoint,
                 'OUTPUT': output
-            }
+            },
+            printfeedback=printfeedback
         )
-    def Smooth(self, iterations:int = 1, offset: float = 0.5, max_angle: float = 180, output="TEMPORARY_OUTPUT"):
+    def Smooth(self, iterations:int = 1, offset: float = 0.5, max_angle: float = 180, output="TEMPORARY_OUTPUT", printfeedback=True):
         """
         Native Smooth geometry process
         """
@@ -563,13 +575,14 @@ class VectorProcessing(BaseLayerProcesser):
                 'OFFSET':offset,
                 'MAX_ANGLE':max_angle,
                 'OUTPUT':output
-            }
+            },
+            printfeedback=printfeedback
         )
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def RingBuffer(self, diameter: float, rings: int, invert: bool = False, segments: int = 16):
+    def RingBuffer(self, diameter: float, rings: int, invert: bool = False, segments: int = 16, printfeedback=True):
         """
         Creates a multi-ring buffer with overlap logic based on a generated Class field \n
         NOTE: Does not preserve attributes. Creates new CLASS Field. \n
@@ -578,7 +591,6 @@ class VectorProcessing(BaseLayerProcesser):
         :param invert: True = Increasing class value inwards (inner ring as highest value) \n
                        False = increases class value outwards (Outer ring as highest value)
         :param segments: Number of line segments to approximate a quarter circle when creating rounded offsets
-        :param output: Output file path string | Default Temporary Memory Output
         :return: VectorProcessing(FlexibleVectorLayer) Object
         """
 
@@ -589,7 +601,7 @@ class VectorProcessing(BaseLayerProcesser):
                 buffer: QgsGeometry = feature.geometry().buffer(ringsize * buffer_i, segments)
                 buffer_combined = buffer if i == 0 else buffer_combined.combine(buffer)
                 if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
-            self._feedback.setProgress((100 / rings) * buffer_i / 2)
+            self._feedback.setProgress((100 / rings) * buffer_i / 2) if printfeedback else None
             geomlist.append((buffer_combined, rings - buffer_i + 1 if invert else buffer_i))
         
         fields = NewFields(("CLASS", FieldType.int))
@@ -606,15 +618,46 @@ class VectorProcessing(BaseLayerProcesser):
             feature.setFields(fields)
             feature.setAttribute("CLASS", geomlist[geom_i][1])
             layer.dataProvider().addFeature(feature)
-            self._feedback.setProgress(((100 / rings) * (geom_i + 1) / 2) + 50)
+            self._feedback.setProgress(((100 / rings) * (geom_i + 1) / 2) + 50) if printfeedback else None
         layer.commitChanges()
 
+        self._feedback.pushInfo(f"Results: {layer.id()}") if printfeedback else None
         return VectorProcessing(layer.id(), self._context, self._feedback)
+
+    def PolygonCutter(self, hierarchyfield: str | QgsField):
+        """
+        Cuts overlapping polygons hierarchically within a single layer.\n
+        For every features geometry, minus all overlapping feature's geometries, that have a higher hierarchy value, from the current features geometry.\n
+        :param hierarchyfield: the numerical layer field which are used as the hierarchy values. Higher value -> higher cutting priority.
+        :return: VectorProcessing(FlexibleVectorLayer) Object
+        """
+
+        field = hierarchyfield.name() if isinstance(hierarchyfield, QgsField) else hierarchyfield
+        featureindex = QgsSpatialIndex(self._vector.getFeatures())
+        cutlayer = NewVectorLayer("MultiPolygon", self._context, "Cut_Layer")
+        cutlayer.startEditing()
+        cutlayer.dataProvider().addAttributes(self._vector.fields())
+        cutlayer.setCrs(self._vector.crs())
+
+        for feature in self._vector.getFeatures():
+            geom: QgsGeometry = feature.geometry()
+            for fid_intersected in featureindex.intersects(geom.boundingBox()):
+                fid_feature: QgsFeature = self._vector.getFeature(fid_intersected)
+                if geom.intersects(fid_feature.geometry()):
+                    geom = geom.difference(fid_feature.geometry()) if fid_feature[field] > feature[field] else geom
+            cutfeature = QgsFeature()
+            cutfeature.setGeometry(geom)
+            cutfeature.setFields(self._vector.fields())
+            cutfeature.setAttributes(feature.attributes())
+            cutlayer.dataProvider().addFeature(cutfeature)
+        cutlayer.commitChanges()
+
+        return VectorProcessing(cutlayer.id(), self._context, self._feedback)
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def Rasterise(self, field:str, burn:float = 0, use_Z:bool = False, units:int = 1, width:float = 30, height:float = 30, extent:str = None, nodata:float = 0, creation_options:str = None, data_type:int = 5, init:float = None, invert:bool = False, extra:str = '', output = "TEMPORARY_OUTPUT"):
+    def Rasterise(self, field:str, burn:float = 0, use_Z:bool = False, units:int = 1, width:float = 30, height:float = 30, extent:str = None, nodata:float = 0, creation_options:str = None, data_type:int = 5, init:float = None, invert:bool = False, extra:str = '', output = "TEMPORARY_OUTPUT", printfeedback=True):
         """
         GDAL rasterize Process \n
         :param field: Attribute field used to assign pixel values.
@@ -657,7 +700,7 @@ class VectorProcessing(BaseLayerProcesser):
                 },
                 is_child_algorithm=True,
                 context=self._context,
-                feedback=self._feedback
+                feedback=self._feedback if printfeedback else QgsProcessingFeedback()
             )
         )
 
@@ -743,14 +786,15 @@ class RasterProcessing(BaseLayerProcesser):
         self._feedback = feedback
         self._raster = BaseLayerProcesser(input_raster, self._context, self._feedback)
     
-    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], output: str | int = 0):
+    def run(self, algorname:str | QgsProcessingAlgorithm, parameters: dict[str, object], output: str | int = 0, printfeedback: bool = True):
+        if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
         _output = self._raster.ProcessingOutput(
             processing.run(
                 algorname,
                 self.ProcessingInput(parameters),
                 is_child_algorithm=True,
                 context=self._context,
-                feedback=self._feedback
+                feedback=self._feedback if printfeedback else QgsProcessingFeedback()
             ),
             output=output
         )
@@ -911,10 +955,56 @@ class RasterProcessing(BaseLayerProcesser):
     def Clone(self, printfeedback: bool = True):
         return RasterProcessing(CloneLayer(self._raster, self._context, self._feedback, printfeedback), self._context, self._feedback)
 
+    def GradientMask(self, maskvalue: float, band: int = 1, slopeangle: float = 0.5, printfeedback=True):
+        self._feedback.setProgress(0) if printfeedback else None
+        extent: QgsRectangle = self.extent()
+        crs: QgsCoordinateReferenceSystem = self.crs()
+        rastersize = extent.width() if extent.width() > extent.height() else extent.height()
+
+        RasterClone = self.Clone(False).FillNoData(-999, band, printfeedback=False)
+        self._feedback.setProgress(12) if printfeedback else None
+        RasterMask = RasterClone.RasterCalc(["__self__"], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, "{RasterClone.name()}@1", -999 ) ', extent, crs=crs, printfeedback=False)
+        self._feedback.setProgress(24) if printfeedback else None
+
+        bin_RasterMask = RasterMask.RasterCalc(["__self__"], f' if ( "{RasterMask.name()}@1" = -999, -999, 1 ) ', extent, printfeedback=False)
+        bin_RasterMask.dataProvider().setNoDataValue(1, -999)
+        self._feedback.setProgress(36) if printfeedback else None
+
+        RasterBuffer = bin_RasterMask.Vectorise(1, printfeedback=False) \
+            .Dissolve("VALUE", printfeedback=False) \
+            .RingBuffer(rastersize + (rastersize / 2), 1, printfeedback=False) \
+            .Rasterise("CLASS", width=self.rasterUnitsPerPixelX(), height=self.rasterUnitsPerPixelY(), nodata=-999, printfeedback=False)
+        self._feedback.setProgress(52) if printfeedback else None
+
+        Gradient = RasterBuffer.run(
+            "native:fillsinkswangliu", {
+                'INPUT':"__self__",
+                'BAND':1,
+                'MIN_SLOPE':slopeangle,
+                'CREATION_OPTIONS':None,
+                'OUTPUT_FILLED_DEM':'TEMPORARY_OUTPUT'
+                },
+            "OUTPUT_FILLED_DEM",
+            printfeedback=False
+        )
+        self._feedback.setProgress(64) if printfeedback else None
+        GradientMask = Gradient.RasterCalc(["__self__", RasterClone], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, -999, "{Gradient.name()}@1" ) ', extent, crs=crs, printfeedback=False)
+        self._feedback.setProgress(76) if printfeedback else None
+        Gradient_dif = maskvalue - GradientMask.dataProvider().bandStatistics(1, QgsRasterBandStats.All).maximumValue
+        GradientMask_corected = GradientMask.RasterCalc(["__self__"], f' {Gradient_dif} + "{GradientMask.name()}@1" ', extent, crs=crs, printfeedback=False)
+        self._feedback.setProgress(88) if printfeedback else None
+
+        output_raster = GradientMask_corected.Merge(RasterMask, -999, -999, printfeedback=False)
+        output_raster.setCrs(crs)
+        self._feedback.setProgress(100) if printfeedback else None
+
+        self._feedback.pushInfo(f"Results: {output_raster.id()}") if printfeedback else None
+        return output_raster
+
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def ClipRasterByMaskLayer(self, mask:str, source_crs:QgsCoordinateReferenceSystem = None, target_crs:QgsCoordinateReferenceSystem = None, target_extent:str = None, nodata:float = None, alpha_band:bool = False, crop_to_cutline:bool = True, keep_resolution:bool = False, set_resolution:bool = False, x_resolution:float = None, y_resolution:float = None, multithreading:bool = False, creation_options:str = None, data_type:int = 0, extra='', output = "TEMPORARY_OUTPUT"):
+    def ClipRasterByMaskLayer(self, mask:str, source_crs:QgsCoordinateReferenceSystem = None, target_crs:QgsCoordinateReferenceSystem = None, target_extent:str = None, nodata:float = None, alpha_band:bool = False, crop_to_cutline:bool = True, keep_resolution:bool = False, set_resolution:bool = False, x_resolution:float = None, y_resolution:float = None, multithreading:bool = False, creation_options:str = None, data_type:int = 0, extra='', output = "TEMPORARY_OUTPUT", printfeedback=True):
         """
         GDAL Clip raster by mask layer process \n
         :param mask: Pointer string of the mask layer (vector or raster).
@@ -953,9 +1043,10 @@ class RasterProcessing(BaseLayerProcesser):
                 'DATA_TYPE':data_type,
                 'EXTRA':extra,
                 'OUTPUT':output
-            }
+            },
+            printfeedback=printfeedback
         )
-    def ClipRasterByExtent(self, clipping_extent:str, override_crs:bool = False, nodata:float = 0, creation_options:str = None, data_type:int = 0, extra='', output="TEMPORARY_OUTPUT"):
+    def ClipRasterByExtent(self, clipping_extent:str, override_crs:bool = False, nodata:float = 0, creation_options:str = None, data_type:int = 0, extra='', output="TEMPORARY_OUTPUT", printfeedback=True):
         """
         GDAL Clip raster by extent process \n
         :param clipping_extent: Extent string "xmin,xmax,ymin,ymax" defining the output raster bounds.
@@ -977,13 +1068,64 @@ class RasterProcessing(BaseLayerProcesser):
                 'DATA_TYPE':data_type,
                 'EXTRA':extra,
                 'OUTPUT':output
-            }
+            },
+            printfeedback=printfeedback
+        )
+    def RasterCalc(self, layers: list, expression: str, extent: str | QgsRectangle = None, cell_size: float = None, crs: str | QgsCoordinateReferenceSystem = None, creation_options: str = None, output = 'TEMPORARY_OUTPUT', printfeedback=True):
+        """
+        Native Raster calculator process
+        """
+        return self.run(
+            "native:rastercalc", {
+                'LAYERS':layers,
+                'EXPRESSION':expression,
+                'EXTENT':extent,
+                'CELL_SIZE':cell_size,
+                'CRS':crs,
+                'CREATION_OPTIONS':creation_options,
+                'OUTPUT':output
+            },
+            printfeedback=printfeedback
+        )
+    def FillNoData(self, fill_value: float, band: int = 1, creation_options: str = None, output = 'TEMPORARY_OUTPUT', printfeedback=True):
+        """
+        Native Fill NoData cells process
+        """
+        return self.run(
+            "native:fillnodata", {
+                'INPUT':self._raster,
+                'BAND':band,
+                'FILL_VALUE':fill_value,
+                'CREATION_OPTIONS':creation_options,
+                'OUTPUT':output
+            },
+            printfeedback=printfeedback
+        )
+    def Merge(self, input: str | list[str], nodata_input: float, nodata_output: float, pct: bool = False, separate: bool = False, creation_options: str = None, extra: str = '', data_type: int = 5, output = 'TEMPORARY_OUTPUT', printfeedback=True):
+        """
+        GDAL Merge process
+        """
+        input_list = ["__self__"]
+        input_list.extend(input) if isinstance(input, list) else input_list.append(input)
+        return self.run(
+            "gdal:merge", {
+                'INPUT':input_list,
+                'PCT':pct,
+                'SEPARATE':separate,
+                'NODATA_INPUT':nodata_input,
+                'NODATA_OUTPUT':nodata_output,
+                'CREATION_OPTIONS':creation_options,
+                'EXTRA':extra,
+                'DATA_TYPE':data_type,
+                'OUTPUT':output
+            },
+            printfeedback=printfeedback
         )
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def Vectorise(self, raster_band: int = 1, field_name: str = 'VALUE', output="TEMPORARY_OUTPUT"):
+    def Vectorise(self, raster_band: int = 1, field_name: str = 'VALUE', output="TEMPORARY_OUTPUT", printfeedback=True):
         """
         Native Raster pixels to polygons Process \n
         :param raster_band: Raster band index to convert.
@@ -1001,7 +1143,7 @@ class RasterProcessing(BaseLayerProcesser):
                 },
                 is_child_algorithm=True,
                 context=self._context,
-                feedback=self._feedback
+                feedback=self._feedback if printfeedback else QgsProcessingFeedback()
             )
         )
 
@@ -1024,6 +1166,54 @@ if TYPE_CHECKING:
 
 # >(,)(,)(,)(,)(,)(◜⋅)          i dont know what this is, but he's kinda cute, no?
 #  ^^ ^^ ^^ ^^ ^^
+
+#========================================================================================================#
+#----------------------------------------------InstaScript-----------------------------------------------#
+#===============================================>      <=================================================#
+
+def InstaScript(name: str):
+    script = f"""from qgis.core import(
+    QgsProcessingAlgorithm
+)
+from QUtils import *
+import QUtils, importlib
+
+
+
+class InstaScript(QgsProcessingAlgorithm):
+    importlib.reload(QUtils)
+
+    def name(self):
+        return "{name}"
+    
+    def displayName(self):
+        return "{name}"
+    
+    def group(self):
+        return "Custom Tools"
+    
+    def groupId(self):
+        return "custom_tools"
+    
+    def createInstance(self):
+        return InstaScript()
+
+    def initAlgorithm(self, configuration = None):
+        importlib.reload(QUtils)
+
+
+    def processAlgorithm(self, parameters, context, feedback):
+        importlib.reload(QUtils)
+
+
+
+
+        return {{}}
+"""
+    file = Path(inspect.stack()[1].filename)
+    with open(file, "w") as f:
+        f.write(script)
+
 
 
 #========================================================================================================#
