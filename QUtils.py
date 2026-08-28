@@ -38,6 +38,7 @@ from qgis.core import(
     Qgis,
     QgsProcessingParameterFeatureSource,
     QgsProcessingFeatureSource,
+    QgsProcessingParameterNumber,
     QgsFeature,
     QgsGeometry,
     QgsVectorLayer,
@@ -69,7 +70,10 @@ from PyQt5 import QtCore
 from qgis import processing
 from typing import TYPE_CHECKING, Union
 from pathlib import Path
-import functools, inspect, traceback, math
+import functools, inspect, traceback, math, typing
+
+
+__author__ = "Roxanne Minerals"
 
 #========================================================================================================#
 #---------------------------------------------Error Handler----------------------------------------------#
@@ -135,7 +139,7 @@ def NewVectorLayer(type: Qgis.WkbType | str, context: QgsProcessingContext, name
     wkbtype = QgsWkbTypes().parseType(type) if isinstance(type, str) else type
     return context.temporaryLayerStore().addMapLayer(QgsVectorLayer(QgsWkbTypes().displayString(wkbtype), name, "memory"))
 
-def NewFields(fields: tuple[str, str | QtCore.QMetaType.Type] | list[tuple[str, str | QtCore.QMetaType.Type]]):
+def NewFields(fields: tuple[str, str | QtCore.QMetaType.Type] | list[tuple[str, str | QtCore.QMetaType.Type]], extend: QgsFields = None, extendfrom: bool = False):
     """
     Generates a populated QgsFields object\n
     :param fields: Tuple or list of tuples containing the name of the field and it's field type.\n
@@ -153,19 +157,24 @@ def NewFields(fields: tuple[str, str | QtCore.QMetaType.Type] | list[tuple[str, 
             - "json" -> QVariant.Map
             - "array" -> QVariant.List
             - "unset" -> QVariant.Invalid
+    :param extend: A QgsFields object to append the new fields to.
+    :param extendfrom: if true, the extend QgsFields param will extend from the list of new fields, instead of the new fields appending.
+    :return: QgsFields object.
     """
     fields = [fields] if isinstance(fields, tuple) else fields
-    _qgsfields = QgsFields()
+    _qgsfields = QgsFields() if not extend or extendfrom else extend
     for field in fields:
         field = (field[0], getattr(FieldType, field[1])) if isinstance(field[1], str) else field
         _qgsfields.append(QgsField(field[0], field[1]))
+    if extendfrom: _qgsfields.extend(extend)
     return _qgsfields
 
 #if deep layer cloning already existed, this would be much simpler... ~⪖ ‸⪕~
+@QUtilsExceptions.ErrorHandling
 def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, context: QgsProcessingContext, feedback: QgsProcessingFeedback, printfeedback: bool = True):
     """Deep cloning returning a new layer"""
-    if isinstance(layer, str):
-        layer = QgsProcessingUtils().mapLayerFromString(layer, context) if BaseLayerProcesser(layer, context, feedback).is_pointerStr(layer) else QUtilsExceptions.CriticalError("input layer str is not layer pointer string.")
+    if isinstance(layer, (str, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing, RasterProcessing)):
+        layer = QgsProcessingUtils().mapLayerFromString(str(layer), context) if BaseLayerProcesser(str(layer), context, feedback).is_pointerStr(layer) else QUtilsExceptions.CriticalError("input layer str is not layer pointer string.")
     if isinstance(layer.dataProvider(), QgsRasterDataProvider):
         clone = QgsProcessingUtils().mapLayerFromString(
             processing.run(
@@ -187,14 +196,13 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
         )
         clone.setName(f"{layer.name()}_clone")
         feedback.pushInfo(f"Result: {clone.name()}_{clone.id()}") if printfeedback else None
-    if isinstance(layer.dataProvider(), QgsVectorDataProvider):
-        clone = NewVectorLayer(next(layer.getFeatures()).geometry().wkbType(), context, f"{layer.name()}_clone")
+    elif isinstance(layer.dataProvider(), QgsVectorDataProvider):
+        clone = NewVectorLayer(layer.wkbType(), context, f"{layer.name()}_clone")
         clone.startEditing()
         clone.setCrs(layer.crs())
         clone.dataProvider().addAttributes(layer.fields())
-        clone.dataProvider().addFeatures(layer.getFeatures())
+        clone.dataProvider().addFeatures(layer.dataProvider().getFeatures())
         clone.setAbstract(layer.abstract())
-        clone.setBlendMode(layer.blendMode())
         clone.setCustomProperties(layer.customProperties())
         clone.setBlendMode(layer.blendMode())
         clone.setKeywordList(layer.keywordList())
@@ -218,7 +226,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
     Applies a three component slicing rule to a list of objects, a QgsFeatureIterator, or a QgsVectorLayer, returning a filtered List, QgsFeatureIterator, or QgsVectorLayer. \n
     *because the native slice is a bit rubbish* \n
     NOTE: if your input is QgsFeatures (QgsFeatureIterator or QgsVectorLayer), the fid is the positional int, but for an accurate output you must subtract 1 on
-    the desired fids ints in the input_slice, as fids are 1-based and the slicing logic is 0-based. The output will return the correct 1-based feature ids after slicing logic.\n
+    the desired fids ints in the input_slice, as fids are 1-based (most of the time) and the slicing logic is 0-based. The output will return the correct 1-based feature ids after slicing logic.\n
     :param input_list: List of objects to slice (supports QgsFeatureIterator, and QgsVectorLayer). QgsVectorLayer as input slices the layers features.
     :param feedback: QgsProcessingFeedback object for error and warning reporting.
     :param input_slice: Tuple defining slicing behaviour: \n
@@ -525,7 +533,72 @@ class VectorProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>>>>>     Layer Proesses     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def Clone(self, printfeedback: bool = True):
-        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback), self._context, self._feedback)
+        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback).id(), self._context, self._feedback)
+
+    def wktType(self):
+        return QgsWkbTypes.displayString(self.wkbType())
+
+    def simpleWktType(self):
+        if self.wktType().__contains__("Polygon"): return "Polygon"
+        if self.wktType().__contains__("Point"): return "Point"
+        if self.wktType().__contains__("Line"): return "Line"
+        return self.wktType()
+
+    def changeAttributeValuesV2(self, fid: int, newValues: list) -> bool:
+        attrmap = {}
+        for i, attr in enumerate(newValues):
+            attrmap[i] = attr
+
+        return self.changeAttributeValues(fid, attrmap)
+
+    #I look at myself and I think... sometimes she knows what she's doing ~>.o~
+
+    def addFields(self, fields: QgsFields, positions: list = None):
+        """
+        An extension of addAttributes() which also adds the new fields to the layers features, while allowing positional field insertion.\n
+        *only crashes QGIS sometimes...*\n
+        NOTE: Needs to be run in an edit session.\n
+        :param fields: A QgsFields object of all the new fields to be added.
+        :param positions: A list of integers whos index position relates to the fields position in the fields param.
+            The integer refers to the position at which the relating field will be inserted into the layers field list.
+            If less positions are given then the number of fields, the remaining fields will all be appended to the end.
+        :return: self
+        """
+        checkedfields = QgsFields()
+        for field in fields.toList():
+            if field.name() in self.fields().names():
+                field.setName(f"{field.name()}_")
+            checkedfields.append(field)
+
+        if positions != None:
+            featdict = {}
+            for feature in self.dataProvider().getFeatures(): #it needs those original attributes... ~⪖ ˰⪕~
+                featdict[feature.id()] = feature.attributes()
+            self._feedback.pushInfo(f"{featdict}")
+            fieldlist: list = self.fields().toList()
+            for i, pos in enumerate(positions):
+                fieldlist.insert(pos, checkedfields.toList()[i])
+            newfields = QgsFields(fieldlist)
+            if len(positions) < checkedfields.count():
+                for i in range(len(positions), checkedfields.count()):
+                    newfields.append(checkedfields.toList()[i])
+            self.dataProvider().deleteAttributes(self.fields().allAttributesList())
+            self.dataProvider().addAttributes(newfields)
+        else:
+            self.dataProvider().addAttributes(checkedfields)
+        self.updateFields()
+
+        for feature in self.dataProvider().getFeatures():
+            feature: QgsFeature
+            feature.setId(feature.id()) #this should fix some issues with layer and feature fid mismatches (hopefully) ~>-<~
+            if positions != None:
+                attrs = featdict[feature.id()]
+                for pos in positions: attrs.insert(pos, None)
+            else: attrs: list = feature.attributes()
+            feature.setAttributes(attrs)
+            self.changeAttributeValuesV2(feature.id(), feature.attributes())
+        self.peak(100)
+        return self
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
@@ -654,6 +727,39 @@ class VectorProcessing(BaseLayerProcesser):
 
         return VectorProcessing(cutlayer.id(), self._context, self._feedback)
 
+    @QUtilsExceptions.ErrorHandling
+    def geometryCenter(self):
+        """
+        Creates a new layer containing point features representing the geometric centre of each feature.\n
+        NOTE: polygon features call controid(), the midpoint may not be within the geometry.\n
+        The point features will maintain the attributes of the input layers features.\n
+        An "fid" field will be added or overridden representing the input feature's id.\n
+        :return: VectorProcessing(FlexibleVectorLayer) Object
+        """
+        self._feedback.setProgress(0)
+        fields = NewFields(("fid", FieldType.int), self.fields(), True)
+        layer = NewVectorLayer("MultiPoint", self._context, f"{self.name}_CenterPoints")
+        layer.startEditing()
+        layer.dataProvider().addAttributes(fields)
+        layer.setCrs(self.crs())
+
+        for i, feature in enumerate(self.getFeatures()):
+            feature: QgsFeature
+            pointfeature = QgsFeature()
+            if self.simpleWktType() == "Point": point = feature.geometry()
+            elif self.simpleWktType() == "Line": point = feature.geometry().interpolate(feature.geometry().length() / 2)
+            elif self.simpleWktType() == "Polygon": point = feature.geometry().centroid()
+            else: QUtilsExceptions.CriticalError(f"Geometry of {self.id()} does not support center locating operation", self._feedback)
+            pointfeature.setGeometry(point)
+            pointfeature.setFields(fields)
+            pointfeature.setAttributes(feature.attributes())
+            pointfeature.setAttribute("fid", feature.id())
+            layer.dataProvider().addFeature(pointfeature)
+            self._feedback.setProgress((100 / self.featureCount()) * (i + 1))
+        layer.commitChanges()
+
+        return VectorProcessing(layer.id(), self._context, self._feedback)
+
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
@@ -722,14 +828,15 @@ class VectorProcessing_Buffer(VectorProcessing):
 
 if TYPE_CHECKING:
     class VectorProcessing(VectorProcessing_Buffer, QgsMapLayer, QgsVectorLayer):
-        pass
+        def dataProvider(self) -> QgsVectorDataProvider:
+            pass
 
 #I studied geology not english language, of course theres spelling mistakes ~>.<~
 
 #========================================================================================================#
 #-------------------------------------------Feature Processing-------------------------------------------#
 #===============================================>      <=================================================#
-
+#lowkey i dont think theres much point to this wrapper...
 class FeatureProcessing:
     """NOTE: When calling QgsFeature methods on a FeatureProcessing object, the method is executed *only* on the first QgsFeature in the feature list/iterator. \n
     This is useful for broader geometry introspection, but for geometry operations or transformations, iterate through the featurelist attribute."""
@@ -1158,7 +1265,8 @@ class RasterProcessing_Buffer(RasterProcessing):
 
 if TYPE_CHECKING:
     class RasterProcessing(RasterProcessing_Buffer, QgsMapLayer, QgsRasterLayer):
-        pass
+        def dataProvider(self) -> QgsRasterDataProvider:
+            pass
 
 
 #========================================================================================================#
@@ -1172,34 +1280,36 @@ if TYPE_CHECKING:
 #===============================================>      <=================================================#
 
 def InstaScript(name: str):
+    file = Path(inspect.stack()[1].filename)
     script = f"""from qgis.core import(
     QgsProcessingAlgorithm
 )
 from QUtils import *
 import QUtils, importlib
 
-
+InstaImports({repr(str(file))})
 
 class InstaScript(QgsProcessingAlgorithm):
     importlib.reload(QUtils)
 
     def name(self):
         return "{name}"
-    
+
     def displayName(self):
         return "{name}"
-    
+
     def group(self):
         return "Custom Tools"
-    
+
     def groupId(self):
         return "custom_tools"
-    
+
     def createInstance(self):
         return InstaScript()
 
     def initAlgorithm(self, configuration = None):
         importlib.reload(QUtils)
+        self.addParameter()
 
 
     def processAlgorithm(self, parameters, context, feedback):
@@ -1210,11 +1320,129 @@ class InstaScript(QgsProcessingAlgorithm):
 
         return {{}}
 """
-    file = Path(inspect.stack()[1].filename)
     with open(file, "w") as f:
         f.write(script)
 
+def InstaImports(file):
+    with open(file, "r") as fr:
+        all_lines = fr.readlines()
 
+    for line_no, line in enumerate(all_lines):
+        if line.startswith("from qgis.core import("):
+            importline_start = line_no
+            in_imports = True
+        if line.startswith(")") and in_imports:
+            importline_stop = line_no
+            in_imports = False
+        if line.startswith("    def initAlgorithm("):
+            initline_start = line_no
+        if line.startswith("    def processAlgorithm("):
+            initline_stop = line_no
+            break
+    imports = set()
+    for importline in all_lines[importline_start + 1:importline_stop]:
+        imports.add(importline.strip(", \n"))
+
+    proc_params = []
+    for initline in all_lines[initline_start + 1:initline_stop]:
+        if initline.strip().startswith("self.addParameter(Qgs") or initline.strip().startswith("Qgs"):
+            _proc = ""
+            for letter in initline.strip().removeprefix("self.addParameter("):
+                if letter == "(": break
+                _proc += letter
+            proc_params.append(_proc)
+
+    for _import in proc_params:
+        if _import not in imports:
+            all_lines.insert(importline_stop - 1, f"    {_import},\n")
+
+    with open(file, "w") as fw:
+        fw.writelines(all_lines)
+
+#5BCEFA #F5A9B8 #FFFFFF #F5A9B8 #5BCEFA        ~>.o~
+
+class ProcessingSourceType:
+    MapLayer = Qgis.ProcessingSourceType.MapLayer
+    VectorAnyGeometry = Qgis.ProcessingSourceType.VectorAnyGeometry
+    VectorPoint = Qgis.ProcessingSourceType.VectorPoint
+    VectorLine = Qgis.ProcessingSourceType.VectorLine
+    VectorPolygon = Qgis.ProcessingSourceType.VectorPolygon
+    Raster = Qgis.ProcessingSourceType.Raster
+    File = Qgis.ProcessingSourceType.File
+    Vector = Qgis.ProcessingSourceType.Vector
+    Mesh = Qgis.ProcessingSourceType.Mesh
+    Plugin = Qgis.ProcessingSourceType.Plugin
+    PointCloud = Qgis.ProcessingSourceType.PointCloud
+    Annotation = Qgis.ProcessingSourceType.Annotation
+    VectorTile = Qgis.ProcessingSourceType.VectorTile
+    TiledScene = Qgis.ProcessingSourceType.TiledScene
+
+class NumberType:
+    Integer = QgsProcessingParameterNumber.Integer
+    Double = QgsProcessingParameterNumber.Double
+
+if TYPE_CHECKING:
+    from qgis.core import(
+        QgsProcessingParameterDefinition,
+        QgsProcessingParameterAggregate,
+        QgsProcessingParameterDxfLayers,
+        QgsProcessingParameterFieldMapping,
+        QgsProcessingParameterMeshDatasetGroups,
+        QgsProcessingParameterMeshDatasetTime,
+        QgsProcessingParameters,
+        QgsProcessingParameterBoolean,
+        QgsProcessingParameterCrs,
+        QgsProcessingParameterExtent,
+        QgsProcessingParameterPoint,
+        QgsProcessingParameterGeometry,
+        QgsProcessingParameterFile,
+        QgsProcessingParameterMatrix,
+        QgsProcessingParameterMultipleLayers,
+        QgsProcessingParameterNumber,
+        QgsProcessingParameterDistance,
+        QgsProcessingParameterArea,
+        QgsProcessingParameterVolume,
+        QgsProcessingParameterDuration,
+        QgsProcessingParameterScale,
+        QgsProcessingParameterRange,
+        QgsProcessingParameterRasterLayer,
+        QgsProcessingParameterEnum,
+        QgsProcessingParameterString,
+        QgsProcessingParameterAuthConfig,
+        QgsProcessingParameterExpression,
+        QgsProcessingParameterLimitedDataTypes,
+        QgsProcessingParameterVectorLayer,
+        QgsProcessingParameterLimitedDataTypes,
+        QgsProcessingParameterMeshLayer,
+        QgsProcessingParameterMapLayer,
+        QgsProcessingParameterField,
+        QgsProcessingParameterFeatureSource,
+        QgsProcessingDestinationParameter,
+        QgsProcessingParameterFeatureSink,
+        QgsProcessingParameterVectorDestination,
+        QgsProcessingParameterRasterDestination,
+        QgsProcessingParameterFileDestination,
+        QgsProcessingParameterFolderDestination,
+        QgsProcessingParameterBand,
+        QgsProcessingParameterLayout,
+        QgsProcessingParameterLayoutItem,
+        QgsProcessingParameterColor,
+        QgsProcessingParameterCoordinateOperation,
+        QgsProcessingParameterMapTheme,
+        QgsProcessingParameterDateTime,
+        QgsProcessingParameterProviderConnection,
+        QgsProcessingParameterDatabaseSchema,
+        QgsProcessingParameterDatabaseTable,
+        QgsProcessingParameterPointCloudLayer,
+        QgsProcessingParameterAnnotationLayer,
+        QgsProcessingParameterPointCloudDestination,
+        QgsProcessingParameterPointCloudAttribute,
+        QgsProcessingParameterVectorTileDestination,
+        QgsProcessingParameterTinInputLayers,
+        QgsProcessingParameterType,
+        QgsProcessingParameterVectorTileWriterLayers,
+        QgsProcessingParameterAlignRasterLayers
+    )
 
 #========================================================================================================#
 #------------------------------------------Functionally Useless------------------------------------------#
