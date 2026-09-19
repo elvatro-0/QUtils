@@ -59,7 +59,8 @@ from qgis.core import(
     QgsVectorDataProvider,
     QgsWkbTypes,
     QgsRectangle,
-    QgsSpatialIndex
+    QgsSpatialIndex,
+    QgsFeatureStore
 )
 from qgis.analysis import(
     QgsRasterCalculatorEntry,
@@ -68,9 +69,9 @@ from qgis.analysis import(
 from qgis.PyQt.QtCore import QVariant
 from PyQt5 import QtCore
 from qgis import processing
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Union, overload, Iterator, Iterable
 from pathlib import Path
-import functools, inspect, traceback, math, typing
+import functools, inspect, traceback, math
 
 
 __author__ = "Roxanne Minerals"
@@ -135,9 +136,12 @@ class FieldType:
 #----------------------------------------------Functions-------------------------------------------------#
 #===============================================>      <=================================================#
 
-def NewVectorLayer(type: Qgis.WkbType | str, context: QgsProcessingContext, name: str = "new_Vector") -> QgsVectorLayer:
+def NewVectorLayer(type: Qgis.WkbType | str, context: QgsProcessingContext, name: str = "new_Vector", uri: str | None = None, provider: str = "memory") -> QgsVectorLayer:
     wkbtype = QgsWkbTypes().parseType(type) if isinstance(type, str) else type
-    return context.temporaryLayerStore().addMapLayer(QgsVectorLayer(QgsWkbTypes().displayString(wkbtype), name, "memory"))
+    if uri:
+        fulluri = uri if uri.__contains__("?") else f"{QgsWkbTypes().displayString(wkbtype)}?{uri}"
+    else: fulluri = QgsWkbTypes().displayString(wkbtype)
+    return context.temporaryLayerStore().addMapLayer(QgsVectorLayer(fulluri, name, provider))
 
 def NewFields(fields: tuple[str, str | QtCore.QMetaType.Type] | list[tuple[str, str | QtCore.QMetaType.Type]], extend: QgsFields = None, extendfrom: bool = False):
     """
@@ -197,7 +201,7 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
         clone.setName(f"{layer.name()}_clone")
         feedback.pushInfo(f"Result: {clone.name()}_{clone.id()}") if printfeedback else None
     elif isinstance(layer.dataProvider(), QgsVectorDataProvider):
-        clone = NewVectorLayer(layer.wkbType(), context, f"{layer.name()}_clone")
+        clone = NewVectorLayer(layer.wkbType(), context, f"{layer.name()}_clone", "disable_id_generation=true")
         clone.startEditing()
         clone.setCrs(layer.crs())
         clone.dataProvider().addAttributes(layer.fields())
@@ -216,7 +220,9 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
         clone.commitChanges()
         feedback.pushInfo(f"Result: {clone.id()}") if printfeedback else None
 
-    return clone.id() if isinstance(layer, (str, FlexibleMapLayer, BaseLayerProcesser)) else clone
+    if isinstance(layer, (str, FlexibleMapLayer, BaseLayerProcesser)):
+        return clone.id()
+    return clone
 
 #and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
 #That performance loss is on you for being weird.
@@ -264,7 +270,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
         if context != None:
             first: QgsFeature = next(input_list)
             input_list.rewind()
-            c_layer = NewVectorLayer(first.geometry().wkbType(), context, "_ListSlicer_MEM_LAYER_")
+            c_layer = NewVectorLayer(first.geometry().wkbType(), context, "_ListSlicer_MEM_LAYER_", "disable_id_generation=true&index=yes")
             c_layer.startEditing()
             c_layer.setCrs(context.project().crs())
             c_layer.dataProvider().addAttributes(first.fields())
@@ -523,17 +529,14 @@ class VectorProcessing(BaseLayerProcesser):
 # ∙ 
 
     #-------------------------------------------------------#
-    #>>>>>>>>>>>>>>>  Modification Methods  <<<<<<<<<<<<<<<<#
-    #-------------------------------------------------------#
-    def layer_Slicer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], printfeedback=True):
-        self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}") if printfeedback else None
-        return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context).id(), self._context, self._feedback)
-
-    #-------------------------------------------------------#
-    #>>>>>>>>>>>>>>>     Layer Proesses     <<<<<<<<<<<<<<<<#
+    #>>>>>>>>>>>>>>>>     Layer Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def Clone(self, printfeedback: bool = True):
-        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback).id(), self._context, self._feedback)
+        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback), self._context, self._feedback)
+
+    def layer_Slicer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], printfeedback=True):
+        self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}") if printfeedback else None
+        return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context), self._context, self._feedback)
 
     def wktType(self):
         return QgsWkbTypes.displayString(self.wkbType())
@@ -574,7 +577,6 @@ class VectorProcessing(BaseLayerProcesser):
             featdict = {}
             for feature in self.dataProvider().getFeatures(): #it needs those original attributes... ~⪖ ˰⪕~
                 featdict[feature.id()] = feature.attributes()
-            self._feedback.pushInfo(f"{featdict}")
             fieldlist: list = self.fields().toList()
             for i, pos in enumerate(positions):
                 fieldlist.insert(pos, checkedfields.toList()[i])
@@ -597,7 +599,6 @@ class VectorProcessing(BaseLayerProcesser):
             else: attrs: list = feature.attributes()
             feature.setAttributes(attrs)
             self.changeAttributeValuesV2(feature.id(), feature.attributes())
-        self.peak(100)
         return self
 
     #-------------------------------------------------------#
@@ -647,6 +648,18 @@ class VectorProcessing(BaseLayerProcesser):
                 'ITERATIONS':iterations,
                 'OFFSET':offset,
                 'MAX_ANGLE':max_angle,
+                'OUTPUT':output
+            },
+            printfeedback=printfeedback
+        )
+    def FieldCalculator(self, field_name: str, field_type: int, formula: str, field_length: int = 0, field_precision: int = 0, output="TEMPORARY_OUTPUT", printfeedback=True):
+        return  self.run(
+            "native:fieldcalculator", {
+                'INPUT':self._vector,
+                'FIELD_NAME':field_name,'FIELD_TYPE':field_type,
+                'FIELD_LENGTH':field_length,
+                'FIELD_PRECISION':field_precision,
+                'FORMULA':formula,
                 'OUTPUT':output
             },
             printfeedback=printfeedback
@@ -815,9 +828,15 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>  Vector to Feature Conversion  <<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def VectorToFeature(self):
-        self._feedback.pushInfo(f"Result: VectorToFeature: {str(self._vector)}_QgsFeatureIterator")
-        return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback)
+    def Features(self, maintaincontainer = False):
+        """
+        :param maintaincontainer: dictates if this layer should be the container FeatureProcessing iterates over (if True),
+        or if the features should be iterated over separately in a new container (if False)
+        """
+        if maintaincontainer:
+            return FeatureProcessing(self._vector, self._context, self._feedback)
+        else:
+            return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback)
 
     #======================================================#
 
@@ -836,34 +855,256 @@ if TYPE_CHECKING:
 #========================================================================================================#
 #-------------------------------------------Feature Processing-------------------------------------------#
 #===============================================>      <=================================================#
-#lowkey i dont think theres much point to this wrapper...
-class FeatureProcessing:
-    """NOTE: When calling QgsFeature methods on a FeatureProcessing object, the method is executed *only* on the first QgsFeature in the feature list/iterator. \n
-    This is useful for broader geometry introspection, but for geometry operations or transformations, iterate through the featurelist attribute."""
+#she kinda cooked with this one...
+class FeatureProcessing(VectorProcessing):
+    """
+    A QgsFeatureIterator equivilent with richer methods.\n
+    To fully grasp the usecases of this class, treat every FeatureProcessing object as a cursor.\n
+    NOTE: Creating the container with an empty features input and/or with an empty geometry param, the containers
+    geometry will default to MultiPolygon.\n
+    Second NOTE: The container is a memory layer, and as with all memory layers the fids aren't preserved.
+    If the original fids are needed, an "\_fid_" field is added to all featues, attributing their original fids.\n
+    If featureIdReturn is True any feature retrieved will return with its "\_fid_" value as its id.\n
+    The flag is stored with the container, so new cursors will maintain it, and new containers created with the newContainer() method will copy
+    the flag forward. Importantly, the flag is only passed forwards to new cursors. Cursors created prior to toggling
+    the flag won't be affected by the change.\n
+    \_\_getitem__, \_\_delitem__ and \_\_contains__ will all also work by "\_fid_" instead of by layerFid if True.
+    featureIdReturn is False by default, and can be toggled with toggleFidReturn() and checked with isFeatureIdReturn().
+    """
+    @overload
+    def __init__(self, features: QgsFeatureIterator | Iterable[QgsFeature], context: QgsProcessingContext, feedback: QgsProcessingFeedback, geometry: Qgis.WkbType | str = "MultiPolygon", request: QgsFeatureRequest | str | list[int] = ...):
+        ...
+    @overload
+    def __init__(self, context: QgsProcessingContext, feedback: QgsProcessingFeedback, geometry: Qgis.WkbType | str = "MultiPolygon"):
+        ...
+
+    NO_REQUEST = QgsFeatureRequest().setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)]))
+
     @QUtilsExceptions.ErrorHandling
-    def __init__(self, input_features: list[QgsFeature] | QgsFeatureIterator, context: QgsProcessingContext, feedback: QgsProcessingFeedback):
-        if (isinstance(input_features, list) and isinstance(input_features[0], QgsFeature)) or isinstance(input_features, QgsFeatureIterator):
-            self._context = context
-            self._feedback = feedback
-            self.featurelist = input_features
-            if isinstance(input_features, list):
-                self._feature = self.featurelist[0]
-            if isinstance(input_features, QgsFeatureIterator):
-                self._feature = next(self.featurelist)
-                self.featurelist.rewind()
+    def __init__(self, features_context, context_feedback, feedback_geometry = "MultiPolygon", geometry: Qgis.WkbType | str = None, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
+        if isinstance(features_context, QgsProcessingContext):
+            self._context = features_context
+            self._feedback = context_feedback
+            self.featurestore = NewVectorLayer(feedback_geometry, self._context, "_FEATUREPROCESSING_ITERATOR_CONTAINER_", "index=yes")
+            self.featurestore.startEditing()
+            self.featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64)))
+            self.featurestore.commitChanges()
+            self.cursor = self.featurestore.getFeatures()
+            self._featureidreturn = False
         else:
-            QUtilsExceptions.CriticalError("Input_Features contain invalid objects or is empty - Requres list of QgsFeature objects or QgsFeatureIterator as input")
+            self._context = context_feedback
+            self._feedback = feedback_geometry
+            if isinstance(features_context, (QgsVectorLayer, VectorProcessing, BaseLayerProcesser, FlexibleMapLayer)):
+                if isinstance(features_context.dataProvider(), QgsVectorDataProvider):
+                    features_context.startEditing()
+                    features_context = VectorProcessing(features_context.id(), self._context, self._feedback).addFields(NewFields(("_fid_", FieldType.int64)), [0])
+                    fieldid = features_context.fields().lookupField("_fid_")
+                    for fid in features_context.allFeatureIds():
+                        features_context.changeAttributeValue(fid, fieldid, fid)
+                    features_context.commitChanges()
+                    features_context = self._featurestore(features_context, False)
+                else:
+                    QUtilsExceptions.CriticalError(f"{features_context} is unsupported as features input. If you meant to input a QgsVectorLayer, you did it wrong.", self._feedback)
+            if isinstance(features_context, self._featurestore):
+                self._featureidreturn = features_context._featureidreturn
+                self.featurestore = features_context._features
+                self.cursor = self.featurestore.getFeatures(request)
+            else:
+                _qgsfeaturestor = QgsFeatureStore()
+                if hasattr(features_context, "__next__"):   # wish there was an easier way to test between iterator and iterable ~⪖ ˰⪕~
+                    feature = next(features_context)
+                    _qgsfeaturestor.setFields(feature.fields())
+                    _qgsfeaturestor.addFeature(feature)
+                else:
+                    _qgsfeaturestor.setFields(next(iter(features_context)).fields())
+                _qgsfeaturestor.addFeatures(features_context)
+                if geometry is None:
+                    geometry = _qgsfeaturestor.features()[0].geometry().wkbType() if _qgsfeaturestor.features() else "MultiPolygon"
+                featurestore = VectorProcessing(NewVectorLayer(geometry, self._context, "_FEATUREPROCESSING_ITERATOR_CONTAINER_", "index=yes").id(), self._context, self._feedback)
+                if _qgsfeaturestor.features():
+                    featurestore.startEditing()
+                    featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64), _qgsfeaturestor.features()[0].fields(), True))
+                    for fid in range(_qgsfeaturestor.count()):
+                        feature = _qgsfeaturestor.features()[fid]
+                        self._fid_(feature, feature.id())
+                        featurestore.dataProvider().addFeature(feature)
+                    featurestore.commitChanges()
+                self.featurestore = featurestore
+                self.cursor = self.featurestore.getFeatures(request)
+                self._featureidreturn = False
+        super().__init__(self.featurestore.id(), self._context, self._feedback)
+        if self and not hasattr(self, "_firstfeature"):
+            self._firstfeature = next(self.featurestore.getFeatures())
+            self.cursorposition = self._firstfeature
+        else:
+            self._firstfeature = None
+            self.cursorposition = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> QgsFeature:
+        feature: QgsFeature = next(self.cursor)
+        self.cursorposition = feature
+        if self._featureidreturn:
+            feature.setId(feature["_fid_"])
+        return feature
+
+    def __getitem__(self, id: int) -> QgsFeature:
+        if self._featureidreturn:
+            for feature in self(QgsFeatureRequest().setFilterExpression(f'"_fid_" =  {id}')):
+                feature.setId(id)
+                return feature
+        else:
+            return self.featurestore.getFeature(id)
+
+    def __setitem__(self, id: int, feature: QgsFeature):
+        feature = QgsFeature(feature)
+        self._fid_(feature)
+        feature["_fid_"] = id
+        self.featurestore.startEditing()
+        if self.featurestore.getFeature(id).isValid():
+            feature.setId(id)
+            self.featurestore.updateFeature(feature)
+        else:
+            self.featurestore.dataProvider().addFeature(feature)
+        self.featurestore.commitChanges()
+
+    def __delitem__(self, id: int):
+        self.featurestore.startEditing()
+        if self._featureidreturn:
+            self.featurestore.selectByExpression(f'"_fid_" =  {id}')
+            self.featurestore.deleteSelectedFeatures(QgsVectorLayer().DeleteContext(True, self._context.project()))
+        else:
+            self.featurestore.deleteFeature(id)
+        self.featurestore.commitChanges()
+
+    def __len__(self):
+        return self.featurestore.featureCount()
+
+    def __contains__(self, id):
+        if self._featureidreturn:
+            return self.fidExists(id)
+        else:
+            return self.featurestore.getFeature(id).isValid()
+
+    def __call__(self, request:  QgsFeatureRequest | str | list[int] = NO_REQUEST):
+        return self.newCursor(request)
+
+    def __repr__(self):
+        return f"FeatureProcessing: {{Cursor at: {self.cursorposition}, Layer Fid: {self.cursorposition.id()}, Container: {self.featurestore}}}"
+
+    class _featurestore:
+        def __init__(self, _features: QgsVectorLayer, _featureidreturn: bool):
+            self._features = _features
+            self._featureidreturn = _featureidreturn
+    def newCursor(self, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
+        return FeatureProcessing(self._featurestore(self.featurestore, self._featureidreturn), self._context, self._feedback, request=request)
+
+    def _fid_(self, feature: QgsFeature, value: int = None):
+        if "_fid_" not in feature.fields().names():
+            attr: list = feature.attributes()
+            attr.insert(0, value)
+            feature.setFields(NewFields(("_fid_", FieldType.int64), feature.fields(), True), False)
+            feature.setAttributes(attr)
+        else:
+            feature["_fid_"] = value
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>   Feature Methods     <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def newContainer(self, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
+        _return = FeatureProcessing(self(request).cursor, self._context, self._feedback)
+        if _return.isFeatureIdReturn() != self._featureidreturn:
+            _return.toggleFeatureIdReturn()
+        return _return
+
+    def isFeatureIdReturn(self) -> bool:
+        return self._featureidreturn
+
+    def setFeatureIdReturn(self, set_bool: bool):
+        self._featureidreturn = set_bool
+        return self._featureidreturn
+
+    def toggleFeatureIdReturn(self) -> bool:
+        if self._featureidreturn:
+            self._featureidreturn = False
+        else:
+            self._featureidreturn = True
+        return self._featureidreturn
+
+    def allFids(self) -> list[int]:
+        return [feature["_fid_"] for feature in self()]
+
+    def fidExists(self, fid):
+        for f in self(QgsFeatureRequest().setFilterExpression(f'"_fid_" =  {fid}')):
+            return True
+        else: return False
+
+    def featureIdToLayerFid(self, id) -> int:
+        for feature in self.featurestore.getFeatures(QgsFeatureRequest().setFilterExpression(f'"_fid_" =  {id}')):
+            return feature.id()
+
+    def layerFidToFeatureId(self, fid) -> int:
+        return self.featurestore.getFeature(fid)["_fid_"]
+
+    @QUtilsExceptions.ErrorHandling
+    def addFeature(self, feature, id: int = None):
+        feature = QgsFeature(feature)
+        if id is not None and self.fidExists(id):
+            QUtilsExceptions.CriticalError(f"fid {id} already exists in container.", self._feedback)
+        elif id is None and self.fidExists(feature.id()):
+            QUtilsExceptions.CriticalError(f"fid {feature.id()} already exists in container.", self._feedback)
+        self._fid_(feature)
+        feature["_fid_"] = feature.id() if id is None else id
+        self.featurestore.startEditing()
+        _return = self.featurestore.dataProvider().addFeature(feature)
+        self.featurestore.commitChanges()
+        if self._firstfeature is None:
+            self._firstfeature: QgsFeature = next(self.newCursor())
+        return _return
+
+    @QUtilsExceptions.ErrorHandling
+    def addFeatures(self, features: Iterable[QgsFeature], maintainfid = False):
+        _qgsfeaturestore = QgsFeatureStore()
+        if hasattr(features, "__next__"):
+            feature = next(features)
+            _qgsfeaturestore.setFields(feature.fields())
+            _qgsfeaturestore.addFeature(feature)
+        else:
+            _qgsfeaturestore.setFields(next(iter(features)).fields())
+        _qgsfeaturestore.addFeatures(features)
+        self.featurestore.startEditing()
+        for fid in range(_qgsfeaturestore.count()):
+            feature = _qgsfeaturestore.features()[fid]
+            featureid = 1
+            if self.fidExists(feature.id()):
+                if maintainfid:
+                    QUtilsExceptions.CriticalError(f"fid {feature.id()} already exists in container.", self._feedback)
+                elif self:
+                    featureid = max(self.featurestore.allFeatureIds()) + 1
+            else:
+                featureid = feature.id()
+            self._fid_(feature, featureid)
+            _return = self.featurestore.dataProvider().addFeature(feature)
+            if not _return:
+                self.featurestore.rollBack()
+                return _return
+        self.featurestore.commitChanges()
+        if self._firstfeature is None:
+            self._firstfeature: QgsFeature = next(self.newCursor())
+        return _return
 
     #-------------------------------------------------------#
     #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
     #-------------------------------------------------------#
 
-    def FeaturesToLayer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]] = None):
-        _layer = NewVectorLayer(self._feature.geometry().wkbType(), self._context, "_FeatureToLayer_MEM_LAYER_")
+    def FeaturesToLayer(self, request = NO_REQUEST):
+        _layer = NewVectorLayer(self.wkbType(), self._context, "_FeatureToLayer_MEM_LAYER_")
         _layer.startEditing()
         _layer.setCrs(self._context.project().crs())
-        _layer.dataProvider().addAttributes(self._feature.fields())
-        _layer.dataProvider().addFeatures(ListSlicer(self.featurelist, input_slice, self._feedback, self._context))
+        _layer.dataProvider().addAttributes(self.fields())
+        _layer.dataProvider().addFeatures(self(request).cursor)
         _layer.commitChanges()
 
         self._feedback.pushInfo(f"Result: FeaturesToLayer: {_layer.id()}")
@@ -872,12 +1113,15 @@ class FeatureProcessing:
     #======================================================#
 
     def __getattr__(self, name):
-        return getattr(self._feature, name)
+        if hasattr(self.cursor, name):
+            return getattr(self.cursor, name)
+        else:
+            return getattr(VectorProcessing(self.featurestore.id(), self._context, self._feedback), name)
 class FeatureProcessing_Buffer(FeatureProcessing):
     pass
 
 if TYPE_CHECKING:
-    class FeatureProcessing(FeatureProcessing_Buffer, QgsFeature):
+    class FeatureProcessing(Iterator[QgsFeature], FeatureProcessing_Buffer, QgsFeatureIterator, VectorProcessing):
         pass
 
 #  ⩘-\▪◜
@@ -1062,52 +1306,6 @@ class RasterProcessing(BaseLayerProcesser):
     def Clone(self, printfeedback: bool = True):
         return RasterProcessing(CloneLayer(self._raster, self._context, self._feedback, printfeedback), self._context, self._feedback)
 
-    def GradientMask(self, maskvalue: float, band: int = 1, slopeangle: float = 0.5, printfeedback=True):
-        self._feedback.setProgress(0) if printfeedback else None
-        extent: QgsRectangle = self.extent()
-        crs: QgsCoordinateReferenceSystem = self.crs()
-        rastersize = extent.width() if extent.width() > extent.height() else extent.height()
-
-        RasterClone = self.Clone(False).FillNoData(-999, band, printfeedback=False)
-        self._feedback.setProgress(12) if printfeedback else None
-        RasterMask = RasterClone.RasterCalc(["__self__"], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, "{RasterClone.name()}@1", -999 ) ', extent, crs=crs, printfeedback=False)
-        self._feedback.setProgress(24) if printfeedback else None
-
-        bin_RasterMask = RasterMask.RasterCalc(["__self__"], f' if ( "{RasterMask.name()}@1" = -999, -999, 1 ) ', extent, printfeedback=False)
-        bin_RasterMask.dataProvider().setNoDataValue(1, -999)
-        self._feedback.setProgress(36) if printfeedback else None
-
-        RasterBuffer = bin_RasterMask.Vectorise(1, printfeedback=False) \
-            .Dissolve("VALUE", printfeedback=False) \
-            .RingBuffer(rastersize + (rastersize / 2), 1, printfeedback=False) \
-            .Rasterise("CLASS", width=self.rasterUnitsPerPixelX(), height=self.rasterUnitsPerPixelY(), nodata=-999, printfeedback=False)
-        self._feedback.setProgress(52) if printfeedback else None
-
-        Gradient = RasterBuffer.run(
-            "native:fillsinkswangliu", {
-                'INPUT':"__self__",
-                'BAND':1,
-                'MIN_SLOPE':slopeangle,
-                'CREATION_OPTIONS':None,
-                'OUTPUT_FILLED_DEM':'TEMPORARY_OUTPUT'
-                },
-            "OUTPUT_FILLED_DEM",
-            printfeedback=False
-        )
-        self._feedback.setProgress(64) if printfeedback else None
-        GradientMask = Gradient.RasterCalc(["__self__", RasterClone], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, -999, "{Gradient.name()}@1" ) ', extent, crs=crs, printfeedback=False)
-        self._feedback.setProgress(76) if printfeedback else None
-        Gradient_dif = maskvalue - GradientMask.dataProvider().bandStatistics(1, QgsRasterBandStats.All).maximumValue
-        GradientMask_corected = GradientMask.RasterCalc(["__self__"], f' {Gradient_dif} + "{GradientMask.name()}@1" ', extent, crs=crs, printfeedback=False)
-        self._feedback.setProgress(88) if printfeedback else None
-
-        output_raster = GradientMask_corected.Merge(RasterMask, -999, -999, printfeedback=False)
-        output_raster.setCrs(crs)
-        self._feedback.setProgress(100) if printfeedback else None
-
-        self._feedback.pushInfo(f"Results: {output_raster.id()}") if printfeedback else None
-        return output_raster
-
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
@@ -1228,6 +1426,55 @@ class RasterProcessing(BaseLayerProcesser):
             },
             printfeedback=printfeedback
         )
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    def GradientMask(self, maskvalue: float, band: int = 1, slopeangle: float = 0.5, printfeedback=True):
+        self._feedback.setProgress(0) if printfeedback else None
+        extent: QgsRectangle = self.extent()
+        crs: QgsCoordinateReferenceSystem = self.crs()
+        rastersize = extent.width() if extent.width() > extent.height() else extent.height()
+
+        RasterClone = self.Clone(False).FillNoData(-999, band, printfeedback=False)
+        self._feedback.setProgress(12) if printfeedback else None
+        RasterMask = RasterClone.RasterCalc(["__self__"], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, "{RasterClone.name()}@1", -999 ) ', extent, crs=crs, printfeedback=False)
+        self._feedback.setProgress(24) if printfeedback else None
+
+        bin_RasterMask = RasterMask.RasterCalc(["__self__"], f' if ( "{RasterMask.name()}@1" = -999, -999, 1 ) ', extent, printfeedback=False)
+        bin_RasterMask.dataProvider().setNoDataValue(1, -999)
+        self._feedback.setProgress(36) if printfeedback else None
+
+        RasterBuffer = bin_RasterMask.Vectorise(1, printfeedback=False) \
+            .Dissolve("VALUE", printfeedback=False) \
+            .RingBuffer(rastersize + (rastersize / 2), 1, printfeedback=False) \
+            .Rasterise("CLASS", width=self.rasterUnitsPerPixelX(), height=self.rasterUnitsPerPixelY(), nodata=-999, printfeedback=False)
+        self._feedback.setProgress(52) if printfeedback else None
+
+        Gradient = RasterBuffer.run(
+            "native:fillsinkswangliu", {
+                'INPUT':"__self__",
+                'BAND':1,
+                'MIN_SLOPE':slopeangle,
+                'CREATION_OPTIONS':None,
+                'OUTPUT_FILLED_DEM':'TEMPORARY_OUTPUT'
+                },
+            "OUTPUT_FILLED_DEM",
+            printfeedback=False
+        )
+        self._feedback.setProgress(64) if printfeedback else None
+        GradientMask = Gradient.RasterCalc(["__self__", RasterClone], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, -999, "{Gradient.name()}@1" ) ', extent, crs=crs, printfeedback=False)
+        self._feedback.setProgress(76) if printfeedback else None
+        Gradient_dif = maskvalue - GradientMask.dataProvider().bandStatistics(1, QgsRasterBandStats.All).maximumValue
+        GradientMask_corected = GradientMask.RasterCalc(["__self__"], f' {Gradient_dif} + "{GradientMask.name()}@1" ', extent, crs=crs, printfeedback=False)
+        self._feedback.setProgress(88) if printfeedback else None
+
+        output_raster = GradientMask_corected.Merge(RasterMask, -999, -999, printfeedback=False)
+        output_raster.setCrs(crs)
+        self._feedback.setProgress(100) if printfeedback else None
+
+        self._feedback.pushInfo(f"Results: {output_raster.id()}") if printfeedback else None
+        return output_raster
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
