@@ -177,8 +177,8 @@ def NewFields(fields: tuple[str, str | QtCore.QMetaType.Type] | list[tuple[str, 
 @QUtilsExceptions.ErrorHandling
 def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, context: QgsProcessingContext, feedback: QgsProcessingFeedback, printfeedback: bool = True):
     """Deep cloning returning a new layer"""
-    if isinstance(layer, (str, BaseLayerProcesser, FlexibleMapLayer, VectorProcessing, RasterProcessing)):
-        layer = QgsProcessingUtils().mapLayerFromString(str(layer), context) if BaseLayerProcesser(str(layer), context, feedback).is_pointerStr(layer) else QUtilsExceptions.CriticalError("input layer str is not layer pointer string.")
+    if isinstance(layer, str):
+        layer = QgsProcessingUtils().mapLayerFromString(str(layer), context) if BaseLayerProcesser(layer, context, feedback).is_pointerStr(layer) else QUtilsExceptions.CriticalError("input layer str is not layer pointer string.")
     if isinstance(layer.dataProvider(), QgsRasterDataProvider):
         clone = QgsProcessingUtils().mapLayerFromString(
             processing.run(
@@ -220,8 +220,6 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
         clone.commitChanges()
         feedback.pushInfo(f"Result: {clone.id()}") if printfeedback else None
 
-    if isinstance(layer, (str, FlexibleMapLayer, BaseLayerProcesser)):
-        return clone.id()
     return clone
 
 #and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
@@ -532,7 +530,7 @@ class VectorProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>>>>>>     Layer Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def Clone(self, printfeedback: bool = True):
-        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback), self._context, self._feedback)
+        return VectorProcessing(CloneLayer(self._vector, self._context, self._feedback, printfeedback).id(), self._context, self._feedback)
 
     def layer_Slicer(self, input_slice: tuple[Union[list[int], None], Union[tuple[int, int], list[tuple[int, int]], None], Union[list[int], list[tuple[int, int]], None]], printfeedback=True):
         self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}") if printfeedback else None
@@ -876,7 +874,7 @@ class FeatureProcessing(VectorProcessing):
     mutation; and bulk feature (by the flag, bulkbufferupdate) which stores all modified features in a BufferStore and updates the container all at once.\n
     Both container update operations can be done manually with the updateContainer() ConnectedFeature method.\n
     NOTE: The connectfeatures flag is stored per cursor and not forwarded to new ones. Likewise with both buffer flags,
-    it is per cursor and newCursors are set tothe default value: connectfeatures: True; both buffers: False.
+    it is per cursor and newCursors are set to the default value: connectfeatures: True; both buffers: False.
     """
     @overload
     def __init__(self, features: QgsFeatureIterator | Iterable[QgsFeature], context: QgsProcessingContext, feedback: QgsProcessingFeedback, geometry: Qgis.WkbType | str = "MultiPolygon", request: QgsFeatureRequest | str | list[int] = ...):
@@ -1048,7 +1046,7 @@ class FeatureProcessing(VectorProcessing):
         fidreturn = self.isFeatureIdReturn()
         self.setFeatureIdReturn(True)
         _return = FeatureProcessing(self(request).cursor, self._context, self._feedback)
-        _return.setFeatureIdReturn(self._featureidreturn)
+        _return.setFeatureIdReturn(fidreturn)
         self.setFeatureIdReturn(fidreturn)
         return _return
 
@@ -1147,6 +1145,8 @@ class FeatureProcessing(VectorProcessing):
                     continue
                 break
             newpositions = [pos + 1 if pos in changepos else pos for pos in positions]
+        else:
+            newpositions = positions
         self.featurestore.addFields(fields, newpositions)
         if self._bulkbuffer != None:
             self._bulkbuffer.updateFields()
@@ -1409,7 +1409,7 @@ class RasterProcessing(BaseLayerProcesser):
             self._context
         )
         histDict = {}
-        histogram = rastercalc.dataProvider().histogram(band, bins, minValue, maxValue, rastercalc.extent(), 0, includeOutOfRange=False).histogramVector
+        histogram = rastercalc.dataProvider().histogram(1, bins, minValue, maxValue, rastercalc.extent(), 0, includeOutOfRange=False).histogramVector
         self._context.temporaryLayerStore().removeMapLayer(rastercalc.id())
         for i_bin in range(bins):
             value = histogram[i_bin]
@@ -1529,7 +1529,7 @@ class RasterProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>>>>>     Layer Proesses     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def Clone(self, printfeedback: bool = True):
-        return RasterProcessing(CloneLayer(self._raster, self._context, self._feedback, printfeedback), self._context, self._feedback)
+        return RasterProcessing(CloneLayer(self._raster, self._context, self._feedback, printfeedback).id(), self._context, self._feedback)
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
