@@ -19,7 +19,7 @@ The run method allows any processing algorithm not already implemented within it
 - QgsRasterLayers via **RasterProcessing**  
 ***requires pointer string as input***  
   
-**FeatureProcessing** - A Wrapper around QgsFeatureiterator providing richer methods. It essentially acts as a cursor over a constructed container (a QgsVectorLayer), allowing multiple cursors over the same container by forwarding the containers reference, when newCursor() is called. FeatureProcessing delegates to QgsFeatureIterator methods acting on the specific cursor, and QgsVectorLayer and VectorProcessing methods acting on the container. Effectively, FeatureProcessing is a cursor, through a QgsFeatureIterator, that can modify it's container.
+**FeatureProcessing** - A Wrapper around QgsFeatureiterator providing richer methods. It essentially acts as a cursor over a constructed container (a QgsVectorLayer), allowing multiple cursors over the same container by forwarding the containers reference, when newCursor() is called. FeatureProcessing delegates to QgsFeatureIterator methods acting on the specific cursor, and QgsVectorLayer and VectorProcessing methods acting on the container. Effectively, FeatureProcessing is a cursor, through a QgsFeatureIterator, that can modify it's container.  
 **ConnectedFeature** - A class owned by FeatureProcessing that wraps the returned QgsFeature objetcs and automatically updates the same feature in the container when modifications are made.
 
 _Example Script:_
