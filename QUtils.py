@@ -556,7 +556,7 @@ class VectorProcessing(BaseLayerProcesser):
 
     #I look at myself and I think... sometimes she knows what she's doing ~>.o~
 
-    def addFields(self, fields: QgsFields, positions: list = None):
+    def addFields(self, fields: QgsFields, positions: list[int] = None):
         """
         An extension of addAttributes() which also adds the new fields to the layers features, while allowing positional field insertion.\n
         *only crashes QGIS sometimes...*\n
@@ -573,33 +573,29 @@ class VectorProcessing(BaseLayerProcesser):
                 field.setName(f"{field.name()}_")
             checkedfields.append(field)
 
+        features = self.Features()
+        features.setConnectFeatures(False)
+        features.setFeatureIdReturn(True)
+
         if positions != None:
-            featdict = {}
-            for feature in self.dataProvider().getFeatures(): #it needs those original attributes... ~⪖ ˰⪕~
-                featdict[feature.id()] = feature.attributes()
             fieldlist: list = self.fields().toList()
             for i, pos in enumerate(positions):
                 fieldlist.insert(pos, checkedfields.toList()[i])
-            newfields = QgsFields(fieldlist)
             if len(positions) < checkedfields.count():
-                for i in range(len(positions), checkedfields.count()):
-                    newfields.append(checkedfields.toList()[i])
+                fieldlist.extend([checkedfields.toList()[i] for i in range(len(positions), checkedfields.count())])
             self.dataProvider().deleteAttributes(self.fields().allAttributesList())
-            self.dataProvider().addAttributes(newfields)
+            self.dataProvider().addAttributes(fieldlist)
         else:
             self.dataProvider().addAttributes(checkedfields)
         self.updateFields()
 
-        for feature in self.dataProvider().getFeatures():
+        for feature in self.getFeatures():
             feature: QgsFeature
-            feature.setId(feature.id()) #this should fix some issues with layer and feature fid mismatches (hopefully) ~>-<~
+            attrs: list = features[feature.id()].attributes()
+            attrs.pop(0) #FeatureProcessings _fid_ field
             if positions != None:
-                attrs = featdict[feature.id()]
                 for pos in positions: attrs.insert(pos, None)
-            else: attrs: list = feature.attributes()
-            feature.setAttributes(attrs)
-            self.changeAttributeValuesV2(feature.id(), feature.attributes())
-        return self
+            self.changeAttributeValuesV2(feature.id(), attrs)
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
@@ -863,13 +859,24 @@ class FeatureProcessing(VectorProcessing):
     NOTE: Creating the container with an empty features input and/or with an empty geometry param, the containers
     geometry will default to MultiPolygon.\n
     Second NOTE: The container is a memory layer, and as with all memory layers the fids aren't preserved.
-    If the original fids are needed, an "\_fid_" field is added to all featues, attributing their original fids.\n
-    If featureIdReturn is True any feature retrieved will return with its "\_fid_" value as its id.\n
+    If the original fids are needed, an "\_fid_" field is added to all featues, attributing their original fids.
+    _*This is always set to the FIRST field index.*_ I advise against trying to change the name or position of "\_fid_",
+    there are some safeguards, but it's best not to in the first place.\n
+    If featureIdReturn is True, any feature retrieved will return with its "\_fid_" value as its id.\n
     The flag is stored with the container, so new cursors will maintain it, and new containers created with the newContainer() method will copy
     the flag forward. Importantly, the flag is only passed forwards to new cursors. Cursors created prior to toggling
     the flag won't be affected by the change.\n
-    \_\_getitem__, \_\_delitem__ and \_\_contains__ will all also work by "\_fid_" instead of by layerFid if True.
-    featureIdReturn is False by default, and can be toggled with toggleFidReturn() and checked with isFeatureIdReturn().
+    \_\_getitem__, \_\_delitem__, \_\_setitem__ and \_\_contains__ will all also work by "\_fid_" instead of by layerFid if True.
+    featureIdReturn is False by default, and can be toggled with toggleFidReturn(), set with setFeatureIdReturn() and checked with isFeatureIdReturn().\n
+    Third NOTE: The request is stored separatley per cursor and not forwarded to new ones. Any Cursor/Iterator level operation
+    returns the filtered view of the specific cursor, while Container level operations returns the entire containers collection.\n
+    **ConnectedFeatures**: When True, any feature retrieved through \_\_getitem__ and iteration will remain connected to the container,
+    meaning any opertaion and mutation to that QgsFeature will be auto-updated on the container at method call. Modification can be buffered
+    on two levels: per feature (by the ConnectedFeature flag, bufferupdate) updates the container per single feature after you have finished feature
+    mutation; and bulk feature (by the flag, bulkbufferupdate) which stores all modified features in a BufferStore and updates the container all at once.\n
+    Both container update operations can be done manually with the updateContainer() ConnectedFeature method.\n
+    NOTE: The connectfeatures flag is stored per cursor and not forwarded to new ones. Likewise with both buffer flags,
+    it is per cursor and newCursors are set tothe default value: connectfeatures: True; both buffers: False.
     """
     @overload
     def __init__(self, features: QgsFeatureIterator | Iterable[QgsFeature], context: QgsProcessingContext, feedback: QgsProcessingFeedback, geometry: Qgis.WkbType | str = "MultiPolygon", request: QgsFeatureRequest | str | list[int] = ...):
@@ -885,7 +892,7 @@ class FeatureProcessing(VectorProcessing):
         if isinstance(features_context, QgsProcessingContext):
             self._context = features_context
             self._feedback = context_feedback
-            self.featurestore = NewVectorLayer(feedback_geometry, self._context, "_FEATUREPROCESSING_ITERATOR_CONTAINER_", "index=yes")
+            self.featurestore = VectorProcessing(NewVectorLayer(feedback_geometry, self._context, "_FEATUREPROCESSING_ITERATOR_CONTAINER_", "index=yes").id(), self._context, self._feedback)
             self.featurestore.startEditing()
             self.featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64)))
             self.featurestore.commitChanges()
@@ -897,7 +904,8 @@ class FeatureProcessing(VectorProcessing):
             if isinstance(features_context, (QgsVectorLayer, VectorProcessing, BaseLayerProcesser, FlexibleMapLayer)):
                 if isinstance(features_context.dataProvider(), QgsVectorDataProvider):
                     features_context.startEditing()
-                    features_context = VectorProcessing(features_context.id(), self._context, self._feedback).addFields(NewFields(("_fid_", FieldType.int64)), [0])
+                    features_context = VectorProcessing(features_context.id(), self._context, self._feedback)
+                    features_context.addFields(NewFields(("_fid_", FieldType.int64)), [0])
                     fieldid = features_context.fields().lookupField("_fid_")
                     for fid in features_context.allFeatureIds():
                         features_context.changeAttributeValue(fid, fieldid, fid)
@@ -912,28 +920,35 @@ class FeatureProcessing(VectorProcessing):
             else:
                 _qgsfeaturestor = QgsFeatureStore()
                 if hasattr(features_context, "__next__"):   # wish there was an easier way to test between iterator and iterable ~⪖ ˰⪕~
-                    feature = next(features_context)
-                    _qgsfeaturestor.setFields(feature.fields())
-                    _qgsfeaturestor.addFeature(feature)
+                    feature = next(features_context, None)
+                    if feature != None:
+                        _qgsfeaturestor.setFields(feature.fields())
+                        _qgsfeaturestor.addFeature(feature)
                 else:
-                    _qgsfeaturestor.setFields(next(iter(features_context)).fields())
+                    _qgsfeaturestor.setFields(next(iter(features_context), QgsFeature()).fields())
                 _qgsfeaturestor.addFeatures(features_context)
                 if geometry is None:
                     geometry = _qgsfeaturestor.features()[0].geometry().wkbType() if _qgsfeaturestor.features() else "MultiPolygon"
                 featurestore = VectorProcessing(NewVectorLayer(geometry, self._context, "_FEATUREPROCESSING_ITERATOR_CONTAINER_", "index=yes").id(), self._context, self._feedback)
+                featurestore.startEditing()
                 if _qgsfeaturestor.features():
-                    featurestore.startEditing()
-                    featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64), _qgsfeaturestor.features()[0].fields(), True))
+                    if "_fid_" not in _qgsfeaturestor.fields().names():
+                        featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64), _qgsfeaturestor.features()[0].fields(), True))
                     for fid in range(_qgsfeaturestor.count()):
                         feature = _qgsfeaturestor.features()[fid]
                         self._fid_(feature, feature.id())
                         featurestore.dataProvider().addFeature(feature)
-                    featurestore.commitChanges()
+                else: featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64)))
+                featurestore.commitChanges()
                 self.featurestore = featurestore
                 self.cursor = self.featurestore.getFeatures(request)
                 self._featureidreturn = False
         super().__init__(self.featurestore.id(), self._context, self._feedback)
-        if self and not hasattr(self, "_firstfeature"):
+        self.request = request
+        self._bulkbuffer = None
+        self._bulkbufferupdate = False
+        self.connectfeatures = True
+        if self:
             self._firstfeature = next(self.featurestore.getFeatures())
             self.cursorposition = self._firstfeature
         else:
@@ -948,22 +963,32 @@ class FeatureProcessing(VectorProcessing):
         self.cursorposition = feature
         if self._featureidreturn:
             feature.setId(feature["_fid_"])
+        if self.connectfeatures:
+            return self.ConnectedFeature(self, feature, self._featureidreturn)
         return feature
 
     def __getitem__(self, id: int) -> QgsFeature:
         if self._featureidreturn:
             for feature in self(QgsFeatureRequest().setFilterExpression(f'"_fid_" =  {id}')):
                 feature.setId(id)
-                return feature
+                _return = feature
+                break
+            else: raise IndexError()
         else:
-            return self.featurestore.getFeature(id)
+            _return = self.featurestore.getFeature(id)
+        if self.connectfeatures:
+            return self.ConnectedFeature(self, _return, self._featureidreturn)
+        return _return
 
     def __setitem__(self, id: int, feature: QgsFeature):
         feature = QgsFeature(feature)
         self._fid_(feature)
         feature["_fid_"] = id
         self.featurestore.startEditing()
-        if self.featurestore.getFeature(id).isValid():
+        if self._featureidreturn and self.fidExists(id):
+            feature.setId(self.featureIdToLayerFid(id))
+            self.featurestore.updateFeature(feature)
+        elif self.featurestore.getFeature(id).isValid() and not self._featureidreturn:
             feature.setId(id)
             self.featurestore.updateFeature(feature)
         else:
@@ -980,7 +1005,12 @@ class FeatureProcessing(VectorProcessing):
         self.featurestore.commitChanges()
 
     def __len__(self):
-        return self.featurestore.featureCount()
+        return self.newContainer(self.request).featurestore.featureCount()
+
+    def __bool__(self):
+        if self.featurestore.featureCount() > 0:
+            return True
+        return False
 
     def __contains__(self, id):
         if self._featureidreturn:
@@ -992,10 +1022,11 @@ class FeatureProcessing(VectorProcessing):
         return self.newCursor(request)
 
     def __repr__(self):
-        return f"FeatureProcessing: {{Cursor at: {self.cursorposition}, Layer Fid: {self.cursorposition.id()}, Container: {self.featurestore}}}"
+        fid = self.cursorposition.id() if self else None
+        return f"FeatureProcessing: {{Cursor at: {self.cursorposition}, Layer Fid: {fid}, Container: {self.featurestore}}}"
 
     class _featurestore:
-        def __init__(self, _features: QgsVectorLayer, _featureidreturn: bool):
+        def __init__(self, _features: VectorProcessing, _featureidreturn: bool):
             self._features = _features
             self._featureidreturn = _featureidreturn
     def newCursor(self, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
@@ -1014,10 +1045,19 @@ class FeatureProcessing(VectorProcessing):
     #>>>>>>>>>>>>>>>>   Feature Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def newContainer(self, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
+        fidreturn = self.isFeatureIdReturn()
+        self.setFeatureIdReturn(True)
         _return = FeatureProcessing(self(request).cursor, self._context, self._feedback)
-        if _return.isFeatureIdReturn() != self._featureidreturn:
-            _return.toggleFeatureIdReturn()
+        _return.setFeatureIdReturn(self._featureidreturn)
+        self.setFeatureIdReturn(fidreturn)
         return _return
+
+    def setConnectFeatures(self, set_bool: bool):
+        self.connectfeatures = set_bool
+        return self.connectfeatures
+
+    def isConnectFeatures(self):
+        return self.connectfeatures
 
     def isFeatureIdReturn(self) -> bool:
         return self._featureidreturn
@@ -1034,7 +1074,7 @@ class FeatureProcessing(VectorProcessing):
         return self._featureidreturn
 
     def allFids(self) -> list[int]:
-        return [feature["_fid_"] for feature in self()]
+        return [feature["_fid_"] for feature in self(self.request)]
 
     def fidExists(self, fid):
         for f in self(QgsFeatureRequest().setFilterExpression(f'"_fid_" =  {fid}')):
@@ -1068,11 +1108,12 @@ class FeatureProcessing(VectorProcessing):
     def addFeatures(self, features: Iterable[QgsFeature], maintainfid = False):
         _qgsfeaturestore = QgsFeatureStore()
         if hasattr(features, "__next__"):
-            feature = next(features)
-            _qgsfeaturestore.setFields(feature.fields())
-            _qgsfeaturestore.addFeature(feature)
+            feature = next(features, None)
+            if feature != None:
+                _qgsfeaturestore.setFields(feature.fields())
+                _qgsfeaturestore.addFeature(feature)
         else:
-            _qgsfeaturestore.setFields(next(iter(features)).fields())
+            _qgsfeaturestore.setFields(next(iter(features), QgsFeature()).fields())
         _qgsfeaturestore.addFeatures(features)
         self.featurestore.startEditing()
         for fid in range(_qgsfeaturestore.count()):
@@ -1095,6 +1136,21 @@ class FeatureProcessing(VectorProcessing):
             self._firstfeature: QgsFeature = next(self.newCursor())
         return _return
 
+    def addFields(self, fields: QgsFields, positions: list[int] = None):
+        if positions is None:
+            newpositions = None
+        elif 0 in positions:
+            changepos = []
+            for i, pos in enumerate(sorted(positions)):
+                if pos == i:
+                    changepos.append(pos)
+                    continue
+                break
+            newpositions = [pos + 1 if pos in changepos else pos for pos in positions]
+        self.featurestore.addFields(fields, newpositions)
+        if self._bulkbuffer != None:
+            self._bulkbuffer.updateFields()
+
     #-------------------------------------------------------#
     #>>>>>>>>>  Feature List to Vector Conversion  <<<<<<<<<#
     #-------------------------------------------------------#
@@ -1110,13 +1166,182 @@ class FeatureProcessing(VectorProcessing):
         self._feedback.pushInfo(f"Result: FeaturesToLayer: {_layer.id()}")
         return VectorProcessing(_layer.id(), self._context, self._feedback)
 
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>   Feature Connection   <<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+    class ConnectedFeature:
+        def __init__(self, instance, feature, featureidreturn):
+            self._instance: FeatureProcessing = instance
+            self.feature: QgsFeature = feature
+            self._featureidreturn = featureidreturn
+            self.bufferupdate = False
+            self.backup = QgsFeature(self.feature)
+
+        def __setitem__(self, key, value):
+            self.feature[key] = value
+            self._update()
+        def __delitem__(self, key):
+            self.feature.__delitem__(key)
+            self._update()
+
+        def __getitem__(self, key): return self.feature[key]
+        def __iter__(self): return self.feature.__iter__()
+        def __ne__(self, value): return self.feature.__ne__(value)
+        def __eq__(self, value): return self.feature.__eq__(value)
+        def __hash__(self): return self.feature.__hash__()
+
+        def setBufferUpdate(self, set_bool: bool):
+            self.bufferupdate = set_bool
+            return self.bufferupdate
+
+        def setBulkBufferUpdate(self, set_bool: bool, update: bool = True):
+            if not set_bool and update and self._instance._bulkbufferupdate:
+                self.updateContainer()
+            self._instance._bulkbufferupdate = set_bool
+
+        def isBufferUpdate(self):
+            return self.bufferupdate
+
+        def isBulkBufferUpdate(self):
+            return self._instance._bulkbufferupdate
+
+        @QUtilsExceptions.ErrorHandling
+        def updateContainer(self):
+            if self._instance._bulkbufferupdate:
+                if self._instance._bulkbuffer is None:
+                    QUtilsExceptions.CriticalError("Buffer Store is not initialised on this cursor", self._instance._feedback)
+                for feature in self._instance._bulkbuffer:
+                    feature = QgsFeature(feature) #_bulkbuffer always returns features with _fid_ as the id
+                    feature.setId(self._instance.featureIdToLayerFid(feature.id()))
+                    self._instance.featurestore.updateFeature(feature)
+                self._instance._context.temporaryLayerStore().removeMapLayer(self._instance._bulkbuffer.store.featurestore.id())
+                self._instance._bulkbuffer = None
+            else:
+                feature = QgsFeature(self.feature)
+                if self._featureidreturn:
+                    feature.setId(self._instance.featureIdToLayerFid(feature.id()))
+                return self._instance.featurestore.updateFeature(feature)
+
+        def _update(self):
+            if not self.bufferupdate and not self._instance._bulkbufferupdate:
+                return self.updateContainer()
+            elif self._instance._bulkbufferupdate:
+                self._updateBufferStore()
+
+        def _updateBufferStore(self):
+            if self._instance._bulkbuffer is None:
+                self._instance._bulkbuffer = self._instance._BufferStore(self._instance)
+            self._instance._bulkbuffer.add_update_Feature(self.feature)
+
+        class _methodCaller:
+            def __init__(self, method, instance):
+                self.method = method
+                self.instance = instance
+
+            def __call__(self, *args, **kwargs):
+                _return = self.method(*args, **kwargs)
+                self.instance._update()
+                return _return
+
+        @QUtilsExceptions.ErrorHandling
+        def __getattr__(self, name):
+            _return = getattr(self.feature, name)
+            if callable(_return): 
+                if _return.__name__ == "setFields":
+                    QUtilsExceptions.CriticalError("Cannot setFields on individual connected features. addFields on the container.", self._instance._feedback)
+                return self._methodCaller(_return, self)
+            return _return
+    class ConnectedFeature_Buffer(ConnectedFeature):
+        pass
+    if TYPE_CHECKING:
+        class ConnectedFeature(ConnectedFeature_Buffer, QgsFeature):
+            pass
+
+    class _BufferStore:
+        def __init__(self, instance):
+            self.instance: FeatureProcessing = instance
+            self.store = FeatureProcessing(self.instance._context, self.instance._feedback, self.instance.wkbType())
+            self.store.startEditing()
+            self.store.featurestore.dataProvider().addAttributes(self.instance.fields().toList()[1:])
+            self.store.commitChanges()
+            self.store.setFeatureIdReturn(True)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> QgsFeature:
+            return next(self.store)
+
+        def add_update_Feature(self, feature):
+            feature = QgsFeature(feature)
+            if not self.instance._featureidreturn:
+                feature.setId(self.instance.layerFidToFeatureId(feature.id()))
+            self.store[feature.id()] = feature
+
+        def updateFields(self):
+            deleted: list[int] = []
+            for name in self.store.featurestore.fields().names():
+                if name not in self.instance.featurestore.fields().names():
+                    deleted.append(self.store.featurestore.fields().indexFromName(name))
+            added: list[tuple[QgsField, int]] = []
+            for i, field in enumerate(self.instance.featurestore.fields().toList()):
+                if field.name() not in self.store.featurestore.fields().names():
+                    added.append((field, i))
+            self.store.featurestore.startEditing()
+            self.store.featurestore.dataProvider().deleteAttributes(deleted)
+            self.store.featurestore.updateFields()
+            fields = QgsFields()
+            positions = []
+            for field, i in added:
+                fields.append(field)
+                positions.append(i)
+            self.store.featurestore.addFields(fields, positions)
+            self.store.featurestore.commitChanges()
+
     #======================================================#
+
+    class _methodCaller:
+        def __init__(self, method, instance):
+            self.method = method
+            self.instance: FeatureProcessing = instance
+
+        @QUtilsExceptions.ErrorHandling
+        def __call__(self, *args, **kwargs):
+            datarename = False
+            rename = False
+            if isinstance(self.method.__self__, QgsVectorDataProvider):
+                if self.method.__name__ == "renameAttributes":
+                    if 0 in args[0].keys(): QUtilsExceptions.CriticalError("Cannot rename '_fid_' field", self.instance._feedback)
+                    elif self.instance._bulkbuffer != None: datarename = True
+            elif self.method.__name__ == "renameAttribute":
+                if 0 == args[0]: QUtilsExceptions.CriticalError("Cannot rename '_fid_' field", self.instance._feedback)
+                elif self.instance._bulkbuffer != None: rename = True
+            elif self.method.__name__  == "deleteAttributes" or self.method.__name__ == "deleteAttribute":
+                if 0 in args[0] or 0 == args[0]: QUtilsExceptions.CriticalError("Cannot delete '_fid_' field", self.instance._feedback)
+
+            before: list = self.instance.featurestore.fields().names()
+            _return = self.method(*args, **kwargs)
+            if datarename:
+                self.instance._bulkbuffer.store.featurestore.dataProvider().renameAttributes(*args, **kwargs)
+                return _return
+            elif rename:
+                self.instance._bulkbuffer.store.featurestore.renameAttribute(*args, **kwargs)
+                return _return
+            if isinstance(_return, QgsVectorDataProvider):
+                return self.instance._methodCaller(_return, self.instance)
+            if self.instance.featurestore.fields().names() != before and self.instance._bulkbuffer != None:
+                self.instance._bulkbuffer.updateFields()
+            return _return
 
     def __getattr__(self, name):
         if hasattr(self.cursor, name):
             return getattr(self.cursor, name)
         else:
-            return getattr(VectorProcessing(self.featurestore.id(), self._context, self._feedback), name)
+            _return = getattr(VectorProcessing(self.featurestore.id(), self._context, self._feedback), name)
+            if callable(_return):
+                return self._methodCaller(_return, self)
+            return _return
+        
 class FeatureProcessing_Buffer(FeatureProcessing):
     pass
 
