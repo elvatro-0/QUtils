@@ -60,18 +60,21 @@ from qgis.core import(
     QgsWkbTypes,
     QgsRectangle,
     QgsSpatialIndex,
-    QgsFeatureStore
+    QgsFeatureStore,
+    QgsPointXY,
+    QgsPoint
 )
 from qgis.analysis import(
     QgsRasterCalculatorEntry,
     QgsRasterCalculator
 )
+from qgis.PyQt import QtCore
 from qgis.PyQt.QtCore import QVariant
-from PyQt5 import QtCore
+from qgis.PyQt.QtGui import QColor
 from qgis import processing
 from typing import TYPE_CHECKING, Union, overload, Iterator, Iterable
 from pathlib import Path
-import functools, inspect, traceback, math
+import functools, inspect, traceback, math, random
 
 
 __author__ = "Roxanne Minerals"
@@ -131,6 +134,11 @@ class FieldType:
     json = QVariant.Map
     array = QVariant.List
     unset = QVariant.Invalid
+
+def Color(hex: str):
+    return QColor(hex)
+
+NO_REQUEST = QgsFeatureRequest().setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)]))
 
 #========================================================================================================#
 #----------------------------------------------Functions-------------------------------------------------#
@@ -379,7 +387,67 @@ def PrettyNumber(number: int | float, ndigits: int = 3) -> str:
         if len(str(int(abs(number)))) >= ndigits else round(number, ndigits - len(str(int(abs(number)))))
         )
     trunc_numb = int(trunc_numb) if trunc_numb.is_integer() and len(str(int(abs(trunc_numb)))) >= ndigits else trunc_numb
-    return f"{number:.{ndigits - 1}e}" if abs(number) >= 10 ** 15 else f"{trunc_numb}{letter[0]}"
+    return f"{number:.{ndigits - 1}e}" if abs(number) >= 10 ** 15 else f'{trunc_numb}{"0" * (ndigits - len(str(abs(trunc_numb)).replace(".", "")))}{letter[0]}'
+
+def renderGraph(graphdict: dict[tuple[float, float], float], y_bins: int = 29, y_truncpercent: int = 100, minY: float = None, minValue: float | None = None, maxValue: float | None = None, feedback: QgsProcessingFeedback = QgsProcessingFeedback()):
+    if minValue is None or maxValue is None:
+        _min = next(iter(graphdict.keys()))[0]
+        _max = next(iter(graphdict.keys()))[1]
+        for bin in graphdict.keys():
+            _min = bin[0] if bin[0] < _min else _min
+            _max = bin[1] if bin[1] > _max else _max
+        minValue = _min if minValue is None else minValue
+        maxValue = _max if maxValue is None else maxValue
+    minY = min(graphdict.values()) if minY is None else minY
+
+    maxsum: float = max(graphdict.values()) * (y_truncpercent / 100)
+    y_bins = int(maxsum - minY) if (maxsum - minY) < y_bins else y_bins
+    y_bins += 1 if y_bins == 0 else 0
+    y_Sizes = (maxsum - minY) / y_bins
+    next_min = maxsum - y_Sizes
+    extrapad = 1 if min(graphdict.values()) < -999 else 0
+    linestring = ""
+    linestring += f"{'·' * (5 + extrapad - len(PrettyNumber(maxsum + y_Sizes)))}{PrettyNumber(maxsum + y_Sizes)}│" + "".join(["#" if value >= (maxsum + y_Sizes) else "·" for value in graphdict.values()]) + f"\n"
+    linestring += f"{'·' * (5 + extrapad - len(PrettyNumber(maxsum)))}{PrettyNumber(maxsum)}│" + "".join(["#" if value >= maxsum else "·" for value in graphdict.values()]) + f"\n"
+    for y_i in range(y_bins):
+        y_min = next_min if next_min > minY else minY
+        next_min = y_min - y_Sizes
+        linestring += f"{'·' * (5 + extrapad - len(PrettyNumber(y_min)))}{PrettyNumber(y_min)}│"
+        linestring += "".join(["#" if value > y_min else "·" for value in graphdict.values()]) + f"\n"
+        feedback.setProgress((100 / y_bins) * (y_i + 1))
+    
+    #All this.. just for the x-axis ~>.<~
+    x_pad = len(graphdict.keys()) + 1 + (len(PrettyNumber(minValue, 3)) % 2) - len(PrettyNumber(minValue, 3) + PrettyNumber(maxValue)) + (len(PrettyNumber(maxValue, 3)) // 2)
+    x_list = [minValue, maxValue]
+    for x_i in range(x_pad):
+        hold_list = []
+        for v_i in range(len(x_list) - 1):
+            pad_remain = (x_pad - (5 * len(ListSlicer(x_list, (None, None, [0, len(x_list) - 1]), feedback)))) // (len(x_list) - 1)
+            if pad_remain < 13: # 8(4 spaces between labels) + 5(max width of labels)
+                _break = True
+                break
+            _break = False
+            hold_list.append((x_list[v_i] + x_list[v_i + 1]) / 2)
+        x_list.extend(hold_list)
+        x_list.sort()
+        if _break:
+            break
+    mid_list = ListSlicer(x_list, (None, None, [0, len(x_list) - 1]), feedback)
+    pad_subtraction = ((x_pad - (len(mid_list)) * 5) // (len(mid_list) + 1))
+    remainder = (x_pad - 5 * len(mid_list)) % (len(mid_list) + 1)
+    rem_binlist = [1 for i in range(remainder)]
+    for i in range(1, len(mid_list) - remainder + 1, 2):
+        rem_binlist.insert(i, 0) if len(mid_list) > 1 else None
+    rem_binlist.extend([0 for i in range(len(mid_list) - len(rem_binlist))])
+    rem_binlist.reverse()
+    mid_labels = "".join(
+        [f"{'·' * pad_subtraction}{'·' * ((5 - (len(PrettyNumber(value, 3)))) // 2)}{PrettyNumber(value, 3)}{'·' * ((5 - len(PrettyNumber(value, 3))) // ((len(PrettyNumber(value, 3)) % 2) + 1))}{'·' * rem_binlist[i]}"
+            for i, value in enumerate(mid_list)]
+        )
+    mid_labels = f"{'·' * (x_pad - pad_subtraction)}" if len(mid_list) == 0 else mid_labels
+    linestring += f"{'·' * (5 + extrapad - (len(PrettyNumber(minValue, 3)) % 2))}{PrettyNumber(minValue, 3)}{mid_labels}{'·' * pad_subtraction}{PrettyNumber(maxValue, 3)}"
+
+    return linestring
 
 #========================================================================================================#
 #------------------------------------------Proxy Base Wrappers-------------------------------------------#
@@ -536,6 +604,16 @@ class VectorProcessing(BaseLayerProcesser):
         self._feedback.pushInfo(f"Result: layerFeatures_Slicer: {str(self._vector)}") if printfeedback else None
         return VectorProcessing(ListSlicer(self._vector, input_slice, self._feedback, self._context), self._context, self._feedback)
 
+    def requestedFeatures(self, request: QgsFeatureRequest | str | list[int], name: str = "Selected_Features_Layer"):
+        features = self.Features(request)
+        layer = VectorProcessing(NewVectorLayer(self.wkbType(), self._context, name).id(), self._context, self._feedback)
+        layer.startEditing()
+        layer.setCrs(self.crs())
+        layer.dataProvider().addAttributes(features.fields())
+        layer.dataProvider().addFeatures(features)
+        layer.commitChanges()
+        return layer
+
     def wktType(self):
         return QgsWkbTypes.displayString(self.wkbType())
 
@@ -677,7 +755,7 @@ class VectorProcessing(BaseLayerProcesser):
         ringsize = diameter / 2 / rings
         geomlist = []
         for buffer_i in range(1, rings + 1):
-            for i, feature in enumerate(self._vector.getFeatures()):
+            for i, feature in enumerate(self.Features()):
                 buffer: QgsGeometry = feature.geometry().buffer(ringsize * buffer_i, segments)
                 buffer_combined = buffer if i == 0 else buffer_combined.combine(buffer)
                 if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
@@ -767,6 +845,381 @@ class VectorProcessing(BaseLayerProcesser):
 
         return VectorProcessing(layer.id(), self._context, self._feedback)
 
+
+    # ==Construction Site== #
+    # - under construction - 
+    @QUtilsExceptions.ErrorHandling
+    def longestPath(self, startingcoord: QgsPointXY, printfeedback = True):
+        clone = self.Features()
+        clone.setFeatureIdReturn(True)
+        clone.startEditing()
+        clone.dataProvider().addAttributes(NewFields(("OLD_SELF", FieldType.array)))
+        clone.updateFields()
+        clone.commitChanges()
+        startingfeature: QgsFeature = next(clone.newCursor(QgsFeatureRequest().setDistanceWithin(QgsGeometry.fromPointXY(startingcoord), 0.5)), None)
+        if startingfeature is None:
+            QUtilsExceptions.CriticalError(f"Coordinate {startingcoord} is not on a feature. You missed...", self._feedback)
+
+        feedback = self._feedback
+        stepsfeedback = self._feedback
+        stepsfeedback = QgsProcessingFeedback()
+        if not printfeedback:
+            feedback = QgsProcessingFeedback()
+            stepsfeedback = QgsProcessingFeedback()
+
+        thingy = [0]
+
+        def traverse(feature: QgsFeature, startingcoord: QgsPointXY, local_skip: list = None, old_self: list = None, start = False) -> tuple[float, list[QgsFeature]]:
+            feedback.pushInfo(f"new traversal: {feature.id()}")
+            feedback.pushInfo(f"feature length: {feature.geometry().length()}")
+            feedback.pushInfo(f"startingcood: {startingcoord}")
+
+            if feature.id() in recursionTrap.keys():
+                recursionTrap[feature.id()] += 1
+                if recursionTrap[feature.id()] == 10:
+                    raise RecursionError()
+            else:
+                recursionTrap[feature.id()] = 1
+
+            if local_skip is None:
+                local_skip = []
+            if old_self is None:
+                old_self = []
+
+            if "OLD_SELF" not in feature.fields().names():
+                feature.setFields(NewFields(("OLD_SELF", FieldType.array), feature.fields()), False)
+            selves: list = feature["OLD_SELF"]
+            if not isinstance(selves, list):
+                selves = []
+            selves.append(feature.id())
+            attr: list = feature.attributes()
+            #feedback.pushInfo(f"attr: {attr}, fields: {feature.fields().names()}")
+            attr.pop(len(feature.fields()) - 1)
+            attr.append(selves)
+            clone.startEditing()
+            feature.setAttributes(attr)
+            clone.changeAttributeValuesV2(clone.featureIdToLayerFid(feature.id()), attr)
+            clone.commitChanges()
+            _old_self: list = feature["OLD_SELF"]
+            _local_skip = local_skip.copy()
+
+            feedback.pushInfo(f"local skip: {local_skip}")
+            feedback.pushInfo(f"old self of locator: {old_self}, old self: {feature["OLD_SELF"]}")
+
+            geometry = feature.geometry()
+            geometry.convertToSingleType()
+            geomlength = geometry.length()
+            polyline: list[QgsPointXY] = geometry.asPolyline()
+            steplength = geomlength
+            if int(geomlength) > 0:
+                steplength = ((geomlength - int(geomlength)) / int(geomlength)) + 1
+            steps = int(geomlength / steplength)
+            calculated_length = steplength * steps
+            steps += int(geomlength) - int(calculated_length)
+            feedback.pushInfo(f"calculated length: {calculated_length}")
+
+            startingvertex = geometry.closestVertex(startingcoord)[1]
+            feedback.pushInfo(f"starting vertex: {startingvertex}, {geometry.vertexAt(startingvertex)}")
+            feedback.pushInfo(f"steps {steps}, step length {steplength}")
+
+            _range = range(0, steps + 1)
+            reverse = False
+            if startingvertex == len(polyline) - 1:
+                reverse = True
+                _range = range(-steps, 1)
+
+            attrs: list = feature.attributes()
+            if geometry.vertexAt(0).distance(startingcoord.x(), startingcoord.y()) > steplength / 2 and geometry.vertexAt(len(polyline) - 1).distance(startingcoord.x(), startingcoord.y()) > steplength / 2:
+                feedback.pushInfo("Middle Split!!!")
+                splitfeature1 = QgsFeature()
+                splitfeature1.setId(max(clone.allFids()) + 1)
+                splitfeature1.setFields(feature.fields())
+                attrs.pop(0)
+                attrs.insert(0, splitfeature1.id())
+                splitfeature1.setAttributes(attrs)
+                splitfeature2 = QgsFeature()
+                splitfeature2.setId(max(clone.allFids()) + 2)
+                splitfeature2.setFields(feature.fields())
+                attrs.pop(0)
+                attrs.insert(0, splitfeature2.id())
+                splitfeature2.setAttributes(attrs)
+                feedback.pushInfo(f"1: {splitfeature1.id()}, 2: {splitfeature2.id()}")
+
+                _clostestvertex = geometry.closestVertex(startingcoord)[0]
+                _posangle = geometry.angleAtVertex(geometry.closestVertex(startingcoord)[1]) + 90
+                if _clostestvertex != startingcoord:
+                    feedback.pushInfo("Azemuth!")
+                    _posangle = math.radians(_clostestvertex.azimuth(startingcoord))
+                _pos1 = QgsPointXY(startingcoord.x() + (0.1 * math.cos(_posangle)), startingcoord.y() - (0.1 * math.sin(_posangle)))
+                _pos2 = QgsPointXY(startingcoord.x() - (0.1 * math.cos(_posangle)), startingcoord.y() + (0.1 * math.sin(_posangle)))
+                feedback.pushInfo(f"_splitgeom: {feature.geometry().splitGeometry([_pos1, _pos2], False)}, pos1: {_pos1}, pos2: {_pos2}")
+                _splitgeom: QgsGeometry = geometry.splitGeometry([_pos1, _pos2], False)[1][0]
+                splitfeature1.setGeometry(_splitgeom)
+
+                splitline2 = []
+                for point in polyline:
+                    if not _splitgeom.contains(point) and not (_splitgeom.vertexAt(0).x() == point.x() and _splitgeom.vertexAt(0).y() == point.y()) and not (_splitgeom.vertexAt(len(_splitgeom.asPolyline()) - 1).x() == point.x() and _splitgeom.vertexAt(len(_splitgeom.asPolyline()) - 1).y() == point.y()):
+                        splitline2.append(point)
+                splitline2.append(startingcoord)
+                splitgeom2 = QgsGeometry.fromPolylineXY(splitline2)
+                splitfeature2.setGeometry(splitgeom2)
+
+                if feature.id() in clone and len(set(feature["OLD_SELF"])) > 1:
+                    del clone[feature.id()]
+                skip.append(feature.id())
+                clone.addFeatures([splitfeature1, splitfeature2])
+                #skip.append([splitfeature1.geometry().asPolyline(), splitfeature2.geometry().asPolyline()])
+                #_local_skip.extend([splitfeature1.geometry().asPolyline(), splitfeature2.geometry().asPolyline()])
+                _local_skip.extend([splitfeature1.id(), splitfeature2.id(), feature.id(), startingcoord])
+                #_old_self.append(feature.id())
+                
+                tributary1 = traverse(splitfeature1, startingcoord, _local_skip, old_self)
+                tributary2 = traverse(splitfeature2, startingcoord, _local_skip, old_self)
+                if tributary1[0] > tributary2[0]:
+                    return tributary1
+                return tributary2
+
+
+            featurelist = []
+            longer = [0, []]
+            endfeature = False
+            step_n = 0
+            for step in _range:
+                step = abs(step)
+                if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
+                stepsfeedback.pushInfo(f"step{step_n}") if str(step_n).endswith("00") else None
+                if step_n == 0 and not start:
+                    step_n += 1
+                    continue
+                pos = geometry.interpolate(steplength * step).asPoint()
+                def check_pos():
+                    feats = [feat for feat in clone.newCursor(QgsFeatureRequest().setDistanceWithin(QgsGeometry.fromPointXY(pos), steplength / 2)) if feat.id() not in _old_self and feat.id() not in old_self and not feat.geometry().asPolyline() == polyline]
+                    #if feats: feedback.pushInfo(f"before found feats: {[feat.id() for feat in feats]}")
+                    _f = []
+                    for _feat in feats:
+                        if _feat["OLD_SELF"] is None:
+                            _feat[_feat.fields().indexFromName("OLD_SELF")] = [_feat.id()]
+                        _f.append(_feat)
+                    feats: list[QgsFeature] = _f
+                    _feats = feats.copy()
+                    do_split = False
+                    remove_list = []
+                    skip_pos: list[QgsPointXY] = [_pos for _pos in local_skip if isinstance(_pos, QgsPointXY)]
+                    for _skip_pos in skip_pos:
+                        if QgsGeometry.fromPointXY(_skip_pos).distance(QgsGeometry.fromPointXY(pos)) <= steplength / 2:
+                            feedback.pushInfo(f"skip pos: {_skip_pos}")
+                            return 0, [], True
+                    for i, feat in enumerate(feats):
+                        if feat["OLD_SELF"][0] == feature["OLD_SELF"][0]:
+                            _feats.remove(feat)
+                        elif feat.id() in skip:
+                            #feedback.pushInfo(f"SKIP! {feat.id()}")
+                            #feedback.pushInfo(f"feats: {feats}")
+                            #feedback.pushInfo(f"_feats: {[(_feat.id(), _feat["OLD_SELF"]) for _feat in feats]}")
+                            if [_feat.id() for _feat in feats if feat.id() in _feat["OLD_SELF"] and _feat.id() != feat.id()]:
+                                feedback.pushInfo(f"skip remove: {feat.id()}")
+                                _feats.remove(feat)
+                                for _skip_pos in skip_pos:
+                                    if QgsGeometry.fromPointXY(_skip_pos).distance(QgsGeometry.fromPointXY(pos)) <= steplength / 2 and feat.id() in local_skip:
+                                        remove_list.append(feat)
+                                if geometry.vertexAt(0).distance(pos.x(), pos.y()) > steplength / 2 and geometry.vertexAt(len(polyline) - 1).distance(pos.x(), pos.y()) > steplength / 2:
+                                    do_split = True
+                        elif feat.id() in local_skip and False:
+                            feedback.pushInfo(f"Local Skip! {feat.id()}")
+                            for _skip_pos in skip_pos:
+                                if QgsGeometry.fromPointXY(_skip_pos).distance(QgsGeometry.fromPointXY(pos)) <= steplength / 2:
+                                    _feats.remove(feat)
+                                    remove_list.append(feat)
+                                    feedback.pushInfo(f"1remove: {feat.id()}")
+                                    do_split = True
+                                    break
+                    for feat in feats:
+                        if [_feat.id() for _feat in remove_list if feat["OLD_SELF"][0] in _feat["OLD_SELF"] and _feat.id() != feat.id()] and feat.id() not in local_skip and feat in _feats:
+                            feedback.pushInfo(f"oldself skip remove: {feat.id()}")
+                            _feats.remove(feat)
+                            remove_list.append(feat)
+                            #if feat.geometry().vertexAt(0).distance(pos.x(), pos.y()) > 1 and feat.geometry().vertexAt(len(feat.geometry().asPolyline()) - 1).distance(pos.x(), pos.y()) > 1:
+                            #    do_split = True
+
+                    return feats, _feats, do_split
+                feats, _feats, do_split = check_pos()
+                _feats: list[QgsFeature]
+
+                if feats == 0:
+                    return (0, [])
+
+                if len(_feats) == 0 and do_split:
+                    endfeature = True
+
+                _feats.append(feature)
+                if len(_feats) <= 1 and not do_split:
+                    if step_n == steps:
+                        endfeature = True
+                        feedback.pushInfo(f"step: {step_n}, pos: {pos}")
+                        feedback.pushInfo("endfeature!!!")
+                        break
+                    step_n += 1
+                    continue
+                feedback.pushInfo(f"step: {step_n}")
+                feedback.pushInfo(f"Features Found: {[feat.id() for feat in _feats]}, at {pos}")
+
+                feedback.pushInfo(f"do_split: {do_split}")
+
+                if len(_feats) > 1:
+                    feedback.pushInfo(f"over 1")
+                    feats = _feats
+
+                if step_n < steps and step_n > 0:
+                    posfeats = [feat for feat in feats if feat.geometry().asPolyline() != polyline]
+                    for _posfeat in posfeats:
+                        if "OLD_SELF" in _posfeat.fields().names():
+                            if feature["OLD_SELF"][0] not in _posfeat["OLD_SELF"]:
+                                posfeat = _posfeat
+                                break
+                        else:
+                            posfeat = _posfeat
+                            break
+                    feedback.pushInfo(f"posfeat: {posfeat.id()}")
+                    if "OLD_SELF" in posfeat.fields().names():
+                        posfeat = clone[posfeat["OLD_SELF"][0]]
+                        feedback.pushInfo(f"posfeat oldself: {posfeat.id()}")
+                    posgeom = clone[feature["OLD_SELF"][0]].geometry().intersection(posfeat.geometry())
+                    if posgeom.isMultipart() or QgsWkbTypes().displayString(posgeom.wkbType()) in "LineString":
+                        if QgsWkbTypes().displayString(posgeom.wkbType()) in "MultiLineString":
+                            posgeom.convertToSingleType()
+                            posparts = posgeom.asPolyline()
+                        else:
+                            posparts = posgeom.asMultiPoint()
+                        dist = [geomlength]
+                        #if do_split: dist = [geomlength, pos]
+                        feedback.pushInfo(f"type: {QgsWkbTypes().displayString(posgeom.wkbType())}, {posparts}")
+                        for point in posparts:
+                            if pos.distance(point.x(), point.y()) < dist[0]:
+                                feedback.pushInfo(f"distance: {pos.distance(point.x(), point.y())}!!!")
+                                dist = [pos.distance(point.x(), point.y()), point]
+                        pos = QgsPointXY(dist[1].x(), dist[1].y())
+                    else:
+                        pos = posgeom.asPoint()
+
+                    _, _feats, do_split = check_pos()
+                    if len(_feats) == 0:
+                        step_n += 1
+                        continue
+                    _feats.append(feature)
+
+                #skip.append(feature.geometry().asPolyline())
+                feats = _feats
+                _local_skip.extend([feat.id() for feat in feats])
+                _local_skip.append(pos)
+
+                #testing
+                featsid = [feat.id() for feat in feats]
+                if 304 in featsid and 268 in featsid and 303 in featsid and False:
+                    thingy[0] += 1
+                    if thingy[0] == 1:
+                        _f_ = []
+                        _f_.extend([feats[1], feats[0], feats[2]])
+                        feats = _f_
+
+                for feat in feats:
+                    if self._feedback.isCanceled(): raise QgsProcessingException("Cancelled")
+                    feedback.pushInfo(f"feat id: {feat.id()}")
+
+                    featgeom = feat.geometry()
+                    if featgeom.asPolyline() == polyline:
+                        if step_n < steps and step_n > 0 and not (featgeom.vertexAt(len(featgeom.asPolyline()) - 1) == QgsPoint(pos.x(), pos.y()) or featgeom.vertexAt(0) == QgsPoint(pos.x(), pos.y())):
+                            clostestvertex = geometry.closestVertex(pos)[0]
+                            posangle = geometry.angleAtVertex(geometry.closestVertex(pos)[1]) + 90
+                            if clostestvertex != pos:
+                                posangle = math.radians(clostestvertex.azimuth(pos))
+                            pos1 = QgsPointXY(pos.x() + (0.1 * math.cos(posangle)), pos.y() - (0.1 * math.sin(posangle)))
+                            pos2 = QgsPointXY(pos.x() - (0.1 * math.cos(posangle)), pos.y() + (0.1 * math.sin(posangle)))
+                            splitgeom: list[QgsGeometry] = geometry.splitGeometry([pos1, pos2], False)[1]
+                            
+                            splitline = []
+                            for point in featgeom.asPolyline():
+                                if not splitgeom[0].contains(point) and not (splitgeom[0].vertexAt(0).x() == point.x() and splitgeom[0].vertexAt(0).y() == point.y()) and not (splitgeom[0].vertexAt(len(splitgeom[0].asPolyline()) - 1).x() == point.x() and splitgeom[0].vertexAt(len(splitgeom[0].asPolyline()) - 1).y() == point.y()):
+                                    splitline.append(point)
+                            splitline.append(pos)
+                            splitgeom.append(QgsGeometry.fromPolylineXY(splitline))
+                            if reverse: splitgeom.reverse()
+
+                            splitfeature_traversed = QgsFeature()
+                            splitfeature_traversed.setId(max(clone.allFids()) + 1)
+                            splitfeature_traversed.setFields(feat.fields())
+                            attrs.pop(0)
+                            attrs.insert(0, splitfeature_traversed.id())
+                            splitfeature_traversed.setAttributes(attrs)
+                            splitfeature_traversed.setGeometry(splitgeom[1])
+                            splitfeature_next = QgsFeature()
+                            splitfeature_next.setId(max(clone.allFids()) + 2)
+                            splitfeature_next.setFields(feat.fields())
+                            attrs.pop(0)
+                            attrs.insert(0, splitfeature_next.id())
+                            splitfeature_next.setAttributes(attrs)
+                            splitfeature_next.setGeometry(splitgeom[0])
+
+                            if feat.id() in clone and len(set(feature["OLD_SELF"])) > 1:
+                                del clone[feat.id()]
+                            skip.append(feat.id())
+                            #skip.extend([splitfeature_traversed.geometry().asPolyline(), splitfeature_next.geometry().asPolyline()])
+                            _local_skip.extend([splitfeature_traversed.id(), splitfeature_next.id()])
+                            clone.addFeatures([splitfeature_next, splitfeature_traversed])
+                            geomlength = splitfeature_traversed.geometry().length()
+
+                            if not do_split:
+                                _traverse = traverse(splitfeature_next, pos, _local_skip, _old_self)
+                                if _traverse[0] > longer[0]:
+                                    longer = _traverse
+                            featurelist.append(splitfeature_traversed)
+
+                        else:
+                            if do_split and False:
+                                return (geomlength, [feature])
+                            featurelist.append(feat)
+                        continue
+
+                    tributary = traverse(feat, pos, _local_skip, _old_self)
+                    if tributary[0] > longer[0]:
+                        longer = tributary
+                break
+
+            if not endfeature:
+                featurelist.extend(longer[1])
+            elif not do_split:
+                featurelist.append(feature)
+
+            length = longer[0] + geomlength
+
+            return (length, featurelist)
+
+
+        recursionTrap = {}
+        skip = []
+
+        length, features = traverse(startingfeature, startingcoord, start=True)
+
+        feedback.pushInfo(f"length: {length}")
+
+        layer = VectorProcessing(NewVectorLayer("LineString", self._context, "LongestPath").id(), self._context, self._feedback)
+        layer.startEditing()
+        layer.setCrs(self.crs())
+        layer.dataProvider().addAttributes(features[0].fields())
+        layer.updateFields()
+        layer.dataProvider().addFeatures(features)
+
+        layer.commitChanges()
+
+        return layer
+            
+
+                
+                    
+                    
+                
+
+
+
     #-------------------------------------------------------#
     #>>>>>>>>>>>>    Layer Type Conversion    <<<<<<<<<<<<<<#
     #-------------------------------------------------------#
@@ -822,15 +1275,18 @@ class VectorProcessing(BaseLayerProcesser):
     #-------------------------------------------------------#
     #>>>>>>>>>>>  Vector to Feature Conversion  <<<<<<<<<<<<#
     #-------------------------------------------------------#
-    def Features(self, maintaincontainer = False):
+    def Features(self, request: QgsFeatureRequest | str | list[int] = NO_REQUEST, maintaincontainer = False):
         """
         :param maintaincontainer: dictates if this layer should be the container FeatureProcessing iterates over (if True),
         or if the features should be iterated over separately in a new container (if False)
         """
         if maintaincontainer:
-            return FeatureProcessing(self._vector, self._context, self._feedback)
+            return FeatureProcessing(self._vector, self._context, self._feedback, request=request)
         else:
-            return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback)
+            return FeatureProcessing(self._vector.getFeatures(), self._context, self._feedback, request=request)
+
+    def Feature(self):
+        return self.Features()._firstfeature
 
     #======================================================#
 
@@ -874,7 +1330,7 @@ class FeatureProcessing(VectorProcessing):
     mutation; and bulk feature (by the flag, bulkbufferupdate) which stores all modified features in a BufferStore and updates the container all at once.\n
     Both container update operations can be done manually with the updateContainer() ConnectedFeature method.\n
     NOTE: The connectfeatures flag is stored per cursor and not forwarded to new ones. Likewise with both buffer flags,
-    it is per cursor and newCursors are set to the default value: connectfeatures: True; both buffers: False.
+    it is per cursor and newCursors are set to the default value: connectfeatures: False; both buffers: False.
     """
     @overload
     def __init__(self, features: QgsFeatureIterator | Iterable[QgsFeature], context: QgsProcessingContext, feedback: QgsProcessingFeedback, geometry: Qgis.WkbType | str = "MultiPolygon", request: QgsFeatureRequest | str | list[int] = ...):
@@ -882,8 +1338,6 @@ class FeatureProcessing(VectorProcessing):
     @overload
     def __init__(self, context: QgsProcessingContext, feedback: QgsProcessingFeedback, geometry: Qgis.WkbType | str = "MultiPolygon"):
         ...
-
-    NO_REQUEST = QgsFeatureRequest().setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)]))
 
     @QUtilsExceptions.ErrorHandling
     def __init__(self, features_context, context_feedback, feedback_geometry = "MultiPolygon", geometry: Qgis.WkbType | str = None, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
@@ -899,7 +1353,7 @@ class FeatureProcessing(VectorProcessing):
         else:
             self._context = context_feedback
             self._feedback = feedback_geometry
-            if isinstance(features_context, (QgsVectorLayer, VectorProcessing, BaseLayerProcesser, FlexibleMapLayer)):
+            if isinstance(features_context, (QgsVectorLayer, VectorProcessing, BaseLayerProcesser, FlexibleMapLayer)) and not isinstance(features_context, FeatureProcessing):
                 if isinstance(features_context.dataProvider(), QgsVectorDataProvider):
                     features_context.startEditing()
                     features_context = VectorProcessing(features_context.id(), self._context, self._feedback)
@@ -930,8 +1384,7 @@ class FeatureProcessing(VectorProcessing):
                 featurestore = VectorProcessing(NewVectorLayer(geometry, self._context, "_FEATUREPROCESSING_ITERATOR_CONTAINER_", "index=yes").id(), self._context, self._feedback)
                 featurestore.startEditing()
                 if _qgsfeaturestor.features():
-                    if "_fid_" not in _qgsfeaturestor.fields().names():
-                        featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64), _qgsfeaturestor.features()[0].fields(), True))
+                    featurestore.dataProvider().addAttributes(NewFields(("_fid_", FieldType.int64), _qgsfeaturestor.features()[0].fields(), True))
                     for fid in range(_qgsfeaturestor.count()):
                         feature = _qgsfeaturestor.features()[fid]
                         self._fid_(feature, feature.id())
@@ -945,7 +1398,7 @@ class FeatureProcessing(VectorProcessing):
         self.request = request
         self._bulkbuffer = None
         self._bulkbufferupdate = False
-        self.connectfeatures = True
+        self.connectfeatures = False
         if self:
             self._firstfeature = next(self.featurestore.getFeatures())
             self.cursorposition = self._firstfeature
@@ -993,13 +1446,14 @@ class FeatureProcessing(VectorProcessing):
             self.featurestore.dataProvider().addFeature(feature)
         self.featurestore.commitChanges()
 
-    def __delitem__(self, id: int):
+    def __delitem__(self, id: int | list[int]):
+        id = [id] if isinstance(id, int) else id
         self.featurestore.startEditing()
         if self._featureidreturn:
-            self.featurestore.selectByExpression(f'"_fid_" =  {id}')
-            self.featurestore.deleteSelectedFeatures(QgsVectorLayer().DeleteContext(True, self._context.project()))
+            for _id in id:
+                self.featurestore.dataProvider().deleteFeatures([self.featureIdToLayerFid(_id)])
         else:
-            self.featurestore.deleteFeature(id)
+            self.featurestore.dataProvider().deleteFeatures(id)
         self.featurestore.commitChanges()
 
     def __len__(self):
@@ -1045,7 +1499,7 @@ class FeatureProcessing(VectorProcessing):
     def newContainer(self, request: QgsFeatureRequest | str | list[int] = NO_REQUEST):
         fidreturn = self.isFeatureIdReturn()
         self.setFeatureIdReturn(True)
-        _return = FeatureProcessing(self(request).cursor, self._context, self._feedback)
+        _return = FeatureProcessing(self(request), self._context, self._feedback)
         _return.setFeatureIdReturn(fidreturn)
         self.setFeatureIdReturn(fidreturn)
         return _return
@@ -1328,10 +1782,21 @@ class FeatureProcessing(VectorProcessing):
                 self.instance._bulkbuffer.store.featurestore.renameAttribute(*args, **kwargs)
                 return _return
             if isinstance(_return, QgsVectorDataProvider):
-                return self.instance._methodCaller(_return, self.instance)
+                return self.datawrapper(_return, self.instance)
             if self.instance.featurestore.fields().names() != before and self.instance._bulkbuffer != None:
                 self.instance._bulkbuffer.updateFields()
             return _return
+
+        class datawrapper:
+            def __init__(self, dataprovider, instance):
+                self.dataprovider = dataprovider
+                self.instance: FeatureProcessing = instance
+
+            def __getattr__(self, name):
+                _return = getattr(self.dataprovider, name)
+                if callable(_return):
+                    return self.instance._methodCaller(_return, self.instance)
+                return _return
 
     def __getattr__(self, name):
         if hasattr(self.cursor, name):
@@ -1421,52 +1886,9 @@ class RasterProcessing(BaseLayerProcesser):
                 raise QgsProcessingException("Cancelled")
         self.histDict = {} #for IDE
         setattr(self, f"histDict@{band}", histDict)
-        
-        y_bins = 29   #number of lines
-        maxsum = int(max(histDict.values()) * (y_truncpercent / 100))
-        y_bins = maxsum if maxsum < y_bins else y_bins
-        y_bins += 1 if y_bins == 0 else 0
-        y_Sizes = maxsum / y_bins
-        next_min = maxsum - y_Sizes
-        linestring = ""
-        linestring += f"{int(maxsum + y_Sizes)}│" + "".join(["#" if value >= (maxsum + y_Sizes) else "·" for value in histDict.values()]) + f"\n"
-        linestring += f"{maxsum}│" + "".join(["#" if value >= maxsum else "·" for value in histDict.values()]) + f"\n"
-        for y_i in range(y_bins):
-            y_min = next_min if next_min > 0 else 0
-            next_min = y_min - y_Sizes
-            linestring += f"{'·' * (len(str(maxsum)) - len(str(int(y_min))))}{int(y_min)}│"
-            linestring += "".join(["#" if value > y_min else "·" for value in histDict.values()]) + f"\n"
-        
-        #All this.. just for the x-axis ~>.<~
-        x_pad = bins + 1 + (len(PrettyNumber(minValue, 3)) % 2) - len(PrettyNumber(minValue, 3) + PrettyNumber(maxValue)) + (len(PrettyNumber(maxValue, 3)) // 2)
-        x_list = [minValue, maxValue]
-        for x_i in range(x_pad):
-            hold_list = []
-            for v_i in range(len(x_list) - 1):
-                pad_remain = (x_pad - (5 * len(ListSlicer(x_list, (None, None, [0, len(x_list) - 1]), self._feedback)))) // (len(x_list) - 1)
-                if pad_remain < 13: # 8(4 spaces between labels) + 5(max width of labels)
-                    _break = True
-                    break
-                _break = False
-                hold_list.append((x_list[v_i] + x_list[v_i + 1]) / 2)
-            x_list.extend(hold_list)
-            x_list.sort()
-            if _break:
-                break
-        mid_list = ListSlicer(x_list, (None, None, [0, len(x_list) - 1]), self._feedback)
-        pad_subtraction = ((x_pad - (len(mid_list)) * 5) // (len(mid_list) + 1))
-        remainder = (x_pad - 5 * len(mid_list)) % (len(mid_list) + 1)
-        rem_binlist = [1 for i in range(remainder)]
-        for i in range(1, len(mid_list) - remainder + 1, 2):
-            rem_binlist.insert(i, 0) if len(mid_list) > 1 else None
-        rem_binlist.extend([0 for i in range(len(mid_list) - len(rem_binlist))])
-        rem_binlist.reverse()
-        mid_labels = "".join(
-            [f"{'·' * pad_subtraction}{'·' * ((5 - (len(PrettyNumber(value, 3)))) // 2)}{PrettyNumber(value, 3)}{'·' * ((5 - len(PrettyNumber(value, 3))) // ((len(PrettyNumber(value, 3)) % 2) + 1))}{'·' * rem_binlist[i]}"
-             for i, value in enumerate(mid_list)]
-            )
-        mid_labels = f"{'·' * (x_pad - pad_subtraction)}" if len(mid_list) == 0 else mid_labels
-        linestring += f"{'·' * (len(str(maxsum)) - (len(PrettyNumber(minValue, 3)) % 2))}{PrettyNumber(minValue, 3)}{mid_labels}{'·' * pad_subtraction}{PrettyNumber(maxValue, 3)}"
+
+        maxsum = max(histDict.values()) * (y_truncpercent / 100)
+        linestring = renderGraph(histDict, 29, y_truncpercent, minValue, maxValue, 0)
 
         #sinful ~⪖◞⪕~
         binnolist = [1]
@@ -1477,7 +1899,7 @@ class RasterProcessing(BaseLayerProcesser):
                 break
             binnolist.append(number) if number - len(str(binnolist[len(binnolist) - 1])) > binnolist[len(binnolist) - 1] and number != 101 else None 
         binstring = "·".join([f"{number}" for number in binnolist])                                                         #101 for the same reason as 98
-        linestring = f"\nBin Numbers\n{'·' * (len(str(maxsum)) + 1)}{binstring}\n" + linestring
+        linestring = f"\nBin Numbers\n{'·' * 6}{binstring}\n" + linestring
 
         self.histogram = ""
         setattr(self, f"histogram@{band}", linestring)
@@ -1489,6 +1911,7 @@ class RasterProcessing(BaseLayerProcesser):
         self._feedback.pushInfo(f"{'=♡' * 35}=")
         self._feedback.pushCommandInfo(linestring)
         self._feedback.pushInfo(f"\n{'=♡' * 35}=")
+
         return self
 # ¯ <
 # ∟ ?
@@ -1526,10 +1949,56 @@ class RasterProcessing(BaseLayerProcesser):
             return self
 
     #-------------------------------------------------------#
-    #>>>>>>>>>>>>>>>     Layer Proesses     <<<<<<<<<<<<<<<<#
+    #>>>>>>>>>>>>>>>>     Layer Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def Clone(self, printfeedback: bool = True):
         return RasterProcessing(CloneLayer(self._raster, self._context, self._feedback, printfeedback).id(), self._context, self._feedback)
+
+    def topographicCrossSection(self, transect: Iterable[QgsPointXY], resolution: float, band: int = 1, graphheight: int = 29, returndict = False) -> dict[tuple[float, float], float] | None:
+        self._raster: QgsRasterLayer
+        line = QgsGeometry.fromPolylineXY(transect)
+        steps = line.length() / resolution
+        graphdict = {}
+        _min = self._raster.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue
+        for step in range(int(steps)):
+            stepmin = resolution * step
+            stepmid = line.interpolate(stepmin + (resolution / 2)).asPoint()
+            stepmax = resolution * (step + 1)
+            pixel = self._raster.dataProvider().identify(stepmid, Qgis.RasterIdentifyFormat.Value)
+            elevation = pixel.results()[band]
+            elevation = _min if elevation is None else elevation
+            graphdict[(stepmin, stepmax)] = elevation
+            _max = stepmax
+            self._feedback.setProgress((100 / int(steps)) * (step + 1))
+        if returndict:
+            if not steps.is_integer():
+                remainder = resolution * (steps - int(steps))
+                remainder_pixel = self._raster.dataProvider().identify(line.interpolate(line.length()).asPoint(), Qgis.RasterIdentifyFormat.Value)
+                remainder_elevation = remainder_pixel.results()[band]
+                remainder_elevation = _min if remainder_elevation is None else remainder_elevation
+                graphdict[(_max, _max + remainder)] = remainder_elevation
+            return graphdict
+        else:
+            linestring = "····m\n"
+            linestring += renderGraph(graphdict, graphheight, minValue=0, maxValue=_max, feedback=self._feedback)
+            linestring += "\n····m"
+            self._feedback.pushCommandInfo(linestring)
+
+    def xyToColRow(self, x: float, y: float):
+        tlx = self._raster.dataProvider().extent().xMinimum()
+        tly = self._raster.dataProvider().extent().yMaximum()
+        return (
+            int((x - tlx) // self._raster.rasterUnitsPerPixelX()),
+            int((tly - y) // self._raster.rasterUnitsPerPixelY())
+        )
+
+    def colRowToXY(self, col: int, row: int):
+        tlx = self._raster.dataProvider().extent().xMinimum() + (self._raster.rasterUnitsPerPixelX() / 2)
+        tly = self._raster.dataProvider().extent().yMaximum() - (self._raster.rasterUnitsPerPixelY() / 2)
+        return(
+            (tlx + (col * self._raster.rasterUnitsPerPixelX())),
+            (tly - (row * self._raster.rasterUnitsPerPixelY()))
+        )
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Native Processes    <<<<<<<<<<<<<<<<#
@@ -1698,6 +2167,7 @@ class RasterProcessing(BaseLayerProcesser):
         output_raster.setCrs(crs)
         self._feedback.setProgress(100) if printfeedback else None
 
+        output_raster.setName("GradientMask")
         self._feedback.pushInfo(f"Results: {output_raster.id()}") if printfeedback else None
         return output_raster
 
@@ -1920,7 +2390,7 @@ if TYPE_CHECKING:
 #------------------------------------------Functionally Useless------------------------------------------#
 #=========================================> (just use GeoJson) <=========================================#
 #and kinda not very good at all....
-class Vector_Decoding:
+class _Vector_Decoding:
     def __init__(self, Vector_layer: QgsProcessingFeatureSource):
         self.Vector_layer = Vector_layer
 
