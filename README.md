@@ -64,8 +64,8 @@ class Example(QgsProcessingAlgorithm):
         dissolved = Vector.fixGeometries().Dissolve()
         #Chaining VectorProcessing methods
 
-        processingTest = processing.run("native:fixgeometries", {'INPUT': str(dissolved), 'METHOD':1,'OUTPUT':'TEMPORARY_OUTPUT'}, is_child_algorithm=True, context=context, feedback=feedback)['OUTPUT']
-        #as long as the Processing object is within a str(), it will return the pointer string of the object
+        processingTest = processing.run("native:fixgeometries", {'INPUT': dissolved, 'METHOD':1,'OUTPUT':'TEMPORARY_OUTPUT'}, is_child_algorithm=True, context=context, feedback=feedback)['OUTPUT']
+        #With an active QVariant hook, the object itself can be used directly in the parameter dict! (if the hook fails, str(dissolve))
 
         ReVector = VectorProcessing(processingTest, context, feedback)
         feedback.pushInfo(f"ReVector VectorProcessing Object: {str(ReVector)}")
