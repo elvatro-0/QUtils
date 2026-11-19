@@ -1,8 +1,8 @@
-## QGIS Utility Module.
+## A pyQGIS Module.
 
 ### A lightweight, fluent, type-aware processing framework for QGIS map layers.  
   
-This module provides a unified, fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live Qgs object or the pointer string!  
+This module provides a fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live QgsMapLayer object or the pointer string!  
   
 **Wrapper Classes:**  
   
@@ -22,7 +22,7 @@ The run method allows any processing algorithm not already implemented within it
 **FeatureProcessing** - A Wrapper around QgsFeatureiterator providing richer methods. It essentially acts as a cursor over a constructed container (a QgsVectorLayer), allowing multiple cursors over the same container by forwarding the containers reference, when newCursor() is called. FeatureProcessing delegates to QgsFeatureIterator methods acting on the specific cursor, and QgsVectorLayer and VectorProcessing methods acting on the container. Effectively, FeatureProcessing is a cursor, through a QgsFeatureIterator, that can modify it's container.  
 **ConnectedFeature** - A class owned by FeatureProcessing that wraps the returned QgsFeature objetcs and automatically updates the same feature in the container when modifications are made.
 
-_Example Script:_
+_Example processing Algorithm Script:_
 ```python
 from qgis.core import (
     QgsProcessingAlgorithm,
@@ -59,7 +59,7 @@ class Example(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):
         Vector = VectorProcessing(parameters["INPUT"], context, feedback)
-        #Create VectorProcessing object using the input parameter pointer string
+        #Create VectorProcessing object using the input parameter pointer string, context and feedback
 
         dissolved = Vector.fixGeometries().Dissolve()
         #Chaining VectorProcessing methods
@@ -81,7 +81,54 @@ class Example(QgsProcessingAlgorithm):
 
 
         Rasterised.addLayerToLoadOnCompletion("Output_Raster")
-        #handles addLayerToLoadOnCompletion to you dont have to deal with extracting layer details
+        #handles addLayerToLoadOnCompletion so you dont have to deal with extracting layer details
     
         return {"OUTPUT": Rasterised}
 ```
+---
+
+### QGIS Python Console Scripting
+
+Calling **createContextAndFeedback()** creates... well, the context and feedback, which allows the processing wrappers to be run in the QGIS python console.  
+When called with showwidget = True (the default), a *Feedback Widget* will appear, which the Feedback object will emit messages to.  
+**FeedbackWidget**  
+The Feedback Widget is a custom widget that mimics the processing algorithm log, while adding search and highlighting, line numbers and elepsed time, and support for multiple tabs.  
+Create the widget or call createContextAndFeedback() withtabs = True (default is False).
+
+_Example QGIS Python Console Script:_
+```python
+from QUtils import VectorProcessing, RasterProcessing
+from QUtils.Console import *
+#When scripting in the QGIS Python Console, the Console module needs to be explicitly imported.
+
+context, feedback = createContextAndFeedback(withtabs=True)
+#creates the context and feedback (you'd never guess...)
+
+line = VectorProcessing(iface.layerTreeView().selectedLayers()[0].id(), context, feedback)
+raster = RasterProcessing(iface.layerTreeView().selectedLayers()[1].id(), context, feedback)
+
+raster.topographicCrossSection(line.Feature().geometry().asPolyline(), 5, tabname="CrossSection")
+#Some Processing Wrapper methods (specifically ASCII output methods) can output into a different tab when called with a tab name
+
+raster.GradientMask(2).addLayerToLoadOnCompletion("Gradient")
+#addLayerToLoadOnCompletion works the same as when called in Processing Algorithm Scripts
+
+feedback.widget.addTab(QWidget(), "NewWidget")
+#Widgets can be added through the Feedback object
+
+feedback.complete()
+#At the bottom of a script calling .complete() on the Feedback object signals to the widget that processing has finished.
+```
+
+---
+
+### QVariant Hook
+
+PyQt converts a Python object to a QString with an exact type == str check and wraps everything else as an opaque PyQt_PyObject. Meaning str subclasses don't get converted to a QString (which is silly if you ask me).  
+However! PyQt also exports a C hook that runs BEFORE that check (pyqt5_/pyqt6_register_to_qvariant_convertor).  
+The QVariantHook module registers a ctypes callback on that!  
+Instances of those str classes can sit directly in a processing parameter dict (or anything
+else PyQt turns into a QVariant) and Qt receives a QVariant built from your classes designated converter callable.
+**registering a class:** Call *installQVariantType()* passing the class you want registered and a callable from that class that returns any python object QVariant can convert.  
+can be used as installQVariantType(cls, fn), @installQVariantType, or @installQVariantType(converter=fn).  
+*installPointerString()* registers classes specifically for QString.
