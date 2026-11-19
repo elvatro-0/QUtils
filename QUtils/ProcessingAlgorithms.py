@@ -18,14 +18,14 @@ def InstaScript(name: str):
     script = f"""from qgis.core import(
     QgsProcessingAlgorithm
 )
-import QUtils, importlib
-importlib.reload(QUtils)
+import QUtils
+QUtils.reload()
 from QUtils import *
 
-InstaImports({repr(str(file))})
+_InstaImports({repr(str(file))})
 
 class InstaScript(QgsProcessingAlgorithm):
-    importlib.reload(QUtils)
+    QUtils.reload()
 
     def name(self):
         return "{name}"
@@ -43,12 +43,12 @@ class InstaScript(QgsProcessingAlgorithm):
         return InstaScript()
 
     def initAlgorithm(self, configuration = None):
-        importlib.reload(QUtils)
+        QUtils.reload()
         self.addParameter()
 
 
     def processAlgorithm(self, parameters, context, feedback):
-        importlib.reload(QUtils)
+        QUtils.reload()
 
 
 

@@ -1,6 +1,6 @@
 """
 Custom, pretty error handling.\n
-Mainly for internal use.
+Mainly for internal use... don't worry about it.
 """
 
 from qgis.core import QgsProcessingFeedback, QgsProcessingException

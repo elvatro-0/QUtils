@@ -3,14 +3,25 @@
 from qgis.core import QgsProcessingFeedback, QgsFeatureRequest
 from qgis.PyQt.QtCore import QVariant
 from qgis.PyQt.QtGui import QColor, QTextDocument, QTextCursor
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, Iterable
 from bisect import bisect_left, bisect_right
 
 __author__ = "Roxanne Minerals"
 
 #========================================================================================================#
-#-----------------------------------------------Storage--------------------------------------------------#
+#------------------------------------------------Storage-------------------------------------------------#
 #===============================================>      <=================================================#
+
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>       Constants     <<<<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+
+NO_REQUEST = QgsFeatureRequest().setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)]))
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>>    Conveniences   <<<<<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
 
 class FieldType:
     string = QVariant.String
@@ -25,6 +36,54 @@ class FieldType:
     json = QVariant.Map
     array = QVariant.List
     unset = QVariant.Invalid
+
+def Color(hex: str):
+    return QColor(hex)
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>>  Typing Protocols <<<<<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+
+_generic = TypeVar("_generic", contravariant=True)
+class SupportsAppend(Protocol[_generic]):
+    def append(self, value): ... 
+class SupportsStr(Protocol[_generic]):
+    def __str__(self) -> str: ...
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>>>>    Functions   <<<<<<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
+
+def htmlToPlain(text):
+    string = QTextDocument()
+    string.setHtml(text)
+    return string.toPlainText()
+
+def htmlToFont(html: str):
+    doc = QTextDocument()
+    doc.setHtml(html)
+    block = doc.begin()
+    _iter = block.begin()
+    if _iter.atEnd():
+        return doc.defaultFont()
+    return _iter.fragment().charFormat().font()
+
+def splitHtml(html: str) -> list[str]:
+    doc = QTextDocument()
+    doc.setHtml(html)
+    cuts = [-1] + [i for i in range(doc.characterCount()) if doc.characterAt(i) == "\u2028"]
+    cuts.append(doc.characterCount() - 1)
+    parts = []
+    cursor = QTextCursor(doc)
+    for a, b in zip(cuts, cuts[1:]):
+        cursor.setPosition(a + 1)
+        cursor.setPosition(b, QTextCursor.MoveMode.KeepAnchor)
+        parts.append(cursor.selection().toHtml())
+    return parts
+
+    #-------------------------------------------------------#
+    #>>>>>>>>>>>>>>>>>   Custom Classes  <<<<<<<<<<<<<<<<<<<#
+    #-------------------------------------------------------#
 
 class Carrier:
     """key={"output": 1} -> args[1] == carrier["output"]"""
@@ -57,6 +116,9 @@ class MethodCaller:
     def __class__(self):
         return self.method.__self__.__class__
 
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError(f"{type(self).__name__} must implement __call__")
+
     class datawrapper:
         def __init__(self, dataprovider, cls, instance = None):
             self.dataprovider = dataprovider
@@ -76,6 +138,11 @@ class MethodCaller:
 
 class RangeLookup(list):
     """Mutable sequence of ints or floats which remains sorted"""
+    def __init__(self, iterable: Iterable = None):
+        iterable = [] if not iterable else iterable
+        super().__init__(iterable)
+        self.sort()
+
     def range(self, start: float | int = None, end: float | int = None):
         return (0 if start is None else bisect_left(self, start),
         len(self) if end is None else bisect_right(self, end))
@@ -105,47 +172,9 @@ class RangeLookup(list):
         _return = super().__imul__(value)
         self.sort()
         return _return
-
-def Color(hex: str):
-    return QColor(hex)
-
-NO_REQUEST = QgsFeatureRequest().setOrderBy(QgsFeatureRequest().OrderBy([QgsFeatureRequest().OrderByClause("$id", True)]))
-
+    
 class SilentFeedback(QgsProcessingFeedback):
     def __init__(self, parent: QgsProcessingFeedback):
         super().__init__(False)
         parent.canceled.connect(self.cancel)
-
-_generic = TypeVar("generic", contravariant=True)
-class SupportsAppend(Protocol[_generic]):
-    def append(self, value): ... 
-class SupportsStr(Protocol[_generic]):
-    def __str__(self): ...
-
-def htmlToPlain(text):
-    string = QTextDocument()
-    string.setHtml(text)
-    return string.toPlainText()
-
-def htmlToFont(html: str):
-    doc = QTextDocument()
-    doc.setHtml(html)
-    block = doc.begin()
-    _iter = block.begin()
-    if _iter.atEnd():
-        return doc.defaultFont()
-    return _iter.fragment().charFormat().font()
-
-def splitHtml(html: str) -> list[str]:
-    doc = QTextDocument()
-    doc.setHtml(html)
-    cuts = [-1] + [i for i in range(doc.characterCount()) if doc.characterAt(i) == "\u2028"]
-    cuts.append(doc.characterCount() - 1)
-    parts = []
-    cursor = QTextCursor(doc)
-    for a, b in zip(cuts, cuts[1:]):
-        cursor.setPosition(a + 1)
-        cursor.setPosition(b, QTextCursor.MoveMode.KeepAnchor)
-        parts.append(cursor.selection().toHtml())
-    return parts
 

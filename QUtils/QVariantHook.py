@@ -13,7 +13,6 @@ import qgis.core as core
 from qgis.PyQt.QtCore import QVariant
 from qgis.PyQt import QtCore, sip
 from typing import Any, Callable
-from pathlib import Path
 from dataclasses import dataclass, field, fields, MISSING
 import sys, ctypes
 from ctypes import CFUNCTYPE, POINTER, c_bool, c_char_p, c_int, c_void_p, py_object
@@ -118,7 +117,7 @@ def _makeDispatch(state: _State, size: int):
             result = fn(obj)
             if type(result) is tp:
                 return False
-            src = QVariant(result)   #PyQt does the real conversion, so anything it can put in a QVariant works
+            src = QVariant(result)   #PyQt does the real conversion, so anything it can put in a QVariant works!
             src_ptr = sip.unwrapinstance(src)
             ctypes.memmove(out_ptr, src_ptr, size)
             ctypes.memset(src_ptr, 0, size)
@@ -166,9 +165,9 @@ def _register(state: _State):
 def installQVariantType(cls: type = None, converter: Callable[[Any], Any] = str):
     """Make instances of cls reach Qt as QVariant(converter(obj)).\n
     converter is called with the instance and may return anything PyQt can put in a QVariant:
-    a str (QString), QColor, QPointF, a dict (QVariantMap), a list (QVariantList), ... Defaults to str(obj).
+    a str (QString), QColor, QPointF, a dict (QVariantMap), a list (QVariantList)... Defaults to str(obj).
     Subclasses inherit it unless they are registered themselves. Use as installQVariantType(cls, fn),
-    as @installQVariantType, or as @installQVariantType(converter=fn). Safe to call repeatedly and across reloads.
+    @installQVariantType, or @installQVariantType(converter=fn). Safe to call repeatedly and across reloads.
     """
     if cls is None:
         return lambda target: installQVariantType(target, converter)

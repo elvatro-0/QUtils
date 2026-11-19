@@ -1,5 +1,5 @@
 """
-Allows processing to work in the QGIS python console.\n
+Allows Processing to work in the QGIS python console.\n
 Call createContextAndFeedback()
 """
 
@@ -7,7 +7,7 @@ from qgis.core import QgsProcessingContext, QgsProcessingUtils
 from qgis.gui import QgisInterface
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-import traceback
+import traceback, sys
 
 from .Widgets import *
 
