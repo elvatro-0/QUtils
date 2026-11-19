@@ -132,3 +132,11 @@ else PyQt turns into a QVariant) and Qt receives a QVariant built from your clas
 **registering a class:** Call *installQVariantType()* passing the class you want registered and a callable from that class that returns any python object QVariant can convert.  
 can be used as installQVariantType(cls, fn), @installQVariantType, or @installQVariantType(converter=fn).  
 *installPointerString()* registers classes specifically for QString.
+
+---
+
+## License
+
+Copyright (C) 2026 Roxanne Minerals
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
