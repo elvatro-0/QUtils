@@ -117,7 +117,7 @@ feedback.widget.addTab(QWidget(), "NewWidget")
 #Widgets can be added through the Feedback object
 
 feedback.complete()
-#At the bottom of a script calling .complete() on the Feedback object signals to the widget that processing has finished.
+#At the bottom of a script calling .complete() on the Feedback object signals to the widget and layer loader that processing has finished.
 ```
 
 ---
@@ -128,10 +128,11 @@ PyQt converts a Python object to a QString with an exact type == str check and w
 However! PyQt also exports a C hook that runs BEFORE that check (pyqt5_/pyqt6_register_to_qvariant_convertor).  
 The QVariantHook module registers a ctypes callback on that!  
 Instances of those str classes can sit directly in a processing parameter dict (or anything
-else PyQt turns into a QVariant) and Qt receives a QVariant built from your classes designated converter callable.
+else PyQt turns into a QVariant) and Qt receives a QVariant built from your classes designated converter callable.  
 **registering a class:** Call *installQVariantType()* passing the class you want registered and a callable from that class that returns any python object QVariant can convert.  
 can be used as installQVariantType(cls, fn), @installQVariantType, or @installQVariantType(converter=fn).  
-*installPointerString()* registers classes specifically for QString.
+*installPointerString()* registers classes specifically for QString.  
+If a class fails the hook, you must pass the wrapped pointer string itself. For PointerString subclass thats either str(obj), obj._pointer, or if it also subclasses FlexibleMapLayer, simply obj.id(). Within the QUtils framework, in most cases the object is unwrapped before being processed (so long as the class has a \_\_str\_\_, like PointerString subclasses).
 
 ---
 
