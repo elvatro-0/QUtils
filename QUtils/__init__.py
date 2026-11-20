@@ -34,6 +34,7 @@ ll``````````````¯l6ggggggggggggl`*‡ll‡l````
 #=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=
 
 __author__ = "Roxanne Minerals"
+__version__ = 1.0
 
 import importlib, sys
 

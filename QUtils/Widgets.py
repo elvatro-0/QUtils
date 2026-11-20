@@ -84,6 +84,7 @@ from .ErrorHandling import QUtilsExceptions
 from .Storage import *
 
 __author__ = "Roxanne Minerals"
+__version__ = 1.0
 
 
 class FeedbackWidget:

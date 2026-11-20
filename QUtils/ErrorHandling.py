@@ -7,6 +7,7 @@ from qgis.core import QgsProcessingFeedback, QgsProcessingException
 import functools, inspect, traceback
 
 __author__ = "Roxanne Minerals"
+__version__ = 1.0
 
 #========================================================================================================#
 #---------------------------------------------Error Handler----------------------------------------------#

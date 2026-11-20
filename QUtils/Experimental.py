@@ -5,6 +5,9 @@
 *Heavy Duty Vehicles In Use*
 """
 
+__author__ = "Roxanne Minerals"
+__version__ = 1.0
+
 from .Processing import *
 
 class VectorProcessing_Experimental(VectorProcessing):
