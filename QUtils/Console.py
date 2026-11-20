@@ -3,13 +3,14 @@ Allows Processing to work in the QGIS python console.\n
 Call createContextAndFeedback()
 """
 
-from qgis.core import QgsProcessingContext, QgsProcessingUtils
+from qgis.core import QgsProcessingContext, QgsProcessingUtils, QgsMapLayer
 from qgis.gui import QgisInterface
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 import traceback, sys
 
 from .Widgets import *
+from .Processing import *
 
 __author__ = "Roxanne Minerals"
 
@@ -75,16 +76,26 @@ def loadLayers(context: QgsProcessingContext):
     for layer, detials in context.layersToLoadOnCompletion().items():
         detials.project.addMapLayer(QgsProcessingUtils.mapLayerFromString(layer, context))
 
-def createContextAndFeedback(showWidget = True, withtabs = False):
+def createContextAndFeedback(showwidget = True, withtabs = False):
     context = QgsProcessingContext()
     context.setProject(QgsProject.instance())
     feedback = Feedback()
     context.setFeedback(feedback)
     feedback.finished.connect(lambda: loadLayers(context))
-    if showWidget:
+    if showwidget:
         FeedbackWidget(feedback, withtabs=withtabs)
         feedback.widget.show()
     return context, feedback
+
+class SelectedLayers(list[QgsMapLayer]):
+    def __getitem__(self, index: int) -> PointerString:
+        return PointerString(super().__getitem__(index).id())
+
+def currentLayers(asmap = False) -> SelectedLayers | list[QgsMapLayer]:
+    if asmap: return iface.layerTreeView().selectedLayers()
+    return SelectedLayers(iface.layerTreeView().selectedLayers())
+def currentLayer(asmap = False):
+    return currentLayers(asmap)[0]
 
 if TYPE_CHECKING:
     @dataclass

@@ -341,6 +341,17 @@ class BaseLayerProcesser(FlexibleMapLayer):
     #roses are red, I like mantle wedge depletion-
     def addLayerToLoadOnCompletion(self, output_name: str):
         self.context.addLayerToLoadOnCompletion(self, QgsProcessingContext.LayerDetails(output_name, self.context.project()))
+        return self
+
+    def loadLayer(self, finish = False):
+        self.context.project().addMapLayer(self.forceMapLayer())
+        if finish and isinstance(self.feedback, Feedback):
+            self.feedback.complete()
+        return self
+
+    def complete(self):
+        if isinstance(self.feedback, Feedback):
+            self.feedback.complete()
 
     def setRETURN_CLS(self, cls: type, for_runs: int = -1):
         self.RETURN_CLS = (cls, for_runs)
@@ -1451,7 +1462,7 @@ class RasterProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>>>>>>     Layer Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
 
-    def topographicCrossSection(self, transect: Iterable[QgsPointXY], resolution: float, band: int = 1, graphheight: int = 29, returndict = False, tabname: str = None) -> dict[tuple[float, float], float] | None:
+    def topographicCrossSection(self, transect: Iterable[QgsPointXY], resolution: float, band: int = 1, graphheight: int = 29, returndict = False, tabname: str = None) -> dict[tuple[float, float], float] | RasterProcessing:
         feedback: Feedback = self.feedback
         newtab = False
         if isinstance(tabname, str) and hasattr(feedback, "widget"):
@@ -1497,6 +1508,7 @@ class RasterProcessing(BaseLayerProcesser):
             feedback.pushCommandInfo(linestring)
             if newtab:
                 self.feedback.widget.addTab(widget, tabname)
+        return self
 
     def xyToColRow(self, x: float, y: float):
         tlx = self.dataProvider().extent().xMinimum()

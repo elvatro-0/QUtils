@@ -1,8 +1,8 @@
-## A pyQGIS Module.
+## QUtils! A pyQGIS Package.
 
 ### A lightweight, fluent, type-aware processing framework for QGIS map layers.  
   
-This module provides a fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live QgsMapLayer object or the pointer string!  
+This Package provides a fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live QgsMapLayer object or the pointer string!  
   
 **Wrapper Classes:**  
   
@@ -13,7 +13,7 @@ Used as a proxy wrapper for the Processing classes, but, can also be used standa
 **BaseLayerProcesser** - Proxy Wrapper for the Processing classes handling context, feedback, processing.run() output extraction, and load on completion behaviour.  
   
 **Processing API wrappers** - providing easy, seamless chaining of native and custom processing algorithms, including layer type conversion.  
-The run method allows any processing algorithm not already implemented within its given Processing class to be easily added in script or in the module itself as its algorithm name and parameter dictionary. Context, feedback, and correct output object return is handled by the method.  
+The run method allows any processing algorithm not already implemented within its given Processing class to be easily added in script or in the Processing module itself as its algorithm name and parameter dictionary. Context, feedback, and correct output object return is handled by the method.  
 **Current Layer implementations:**  
 - QgsVectorLayers via **VectorProcessing**
 - QgsRasterLayers via **RasterProcessing**  
@@ -54,7 +54,7 @@ class Example(QgsProcessingAlgorithm):
         return Example()
     
     def initAlgorithm(self, configuration = None):
-        self.addParameter(QgsProcessingParameterFeatureSource("INPUT", "Input Polygon", [QgsProcessing.TypeVectorPoint]))
+        self.addParameter(QgsProcessingParameterFeatureSource("INPUT", "Input Point", [QgsProcessing.TypeVectorPoint]))
         self.addParameter(QgsProcessingParameterRasterDestination("OUTPUT", "Output Destination"))
 
     def processAlgorithm(self, parameters, context, feedback):
