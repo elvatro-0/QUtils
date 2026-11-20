@@ -4,6 +4,11 @@
   
 This Package provides a fluent interface for running QGIS Processing algorithms on map layers without the typical boilerplate of resolving layer objects, extracting outputs, or not knowing if something needs the live QgsMapLayer object or the pointer string!  
   
+### Compatibility
+QUtils supports QGIS 3.x (PyQt5) and QGIS 4.x (PyQt6)
+
+---
+  
 **Wrapper Classes:**  
   
 **FlexibleMapLayer** - Creates objects that act as both QGIS layer pointer strings and live QgsMapLayer objects.  
