@@ -23,7 +23,6 @@ from qgis.core import(
     QgsFeatureIterator,
     QgsFeatureRequest,
     QgsProcessingException,
-    QgsRasterBandStats,
     QgsRasterDataProvider,
     QgsVectorDataProvider,
     QgsDataProvider,

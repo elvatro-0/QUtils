@@ -52,7 +52,6 @@ from qgis.core import(
     QgsFeatureIterator,
     QgsFeatureRequest,
     QgsProcessingException,
-    QgsRasterBandStats,
     QgsRasterDataProvider,
     QgsVectorDataProvider,
     QgsDataProvider,
@@ -69,16 +68,16 @@ from qgis import processing
 from typing import TYPE_CHECKING, Union, overload, Iterator, Iterable
 import math
 
-from .ErrorHandling import QUtilsExceptions
+from .Internal.ErrorHandling import QUtilsExceptions
 from .Console import Feedback
 from .Widgets import FeedbackWidget
 from .QVariantHook import installPointerString
-from .Legacy import ListSlicer
+from .Internal.Legacy import ListSlicer
 from .Storage import *
 
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
 #========================================================================================================#
 #----------------------------------------------Functions-------------------------------------------------#
@@ -214,6 +213,7 @@ def renderGraph(graphdict: dict[tuple[float, float], float], y_bins: int = 29, y
         linestring += f"{'·' * (5 + extrapad - len(PrettyNumber(y_min)))}{PrettyNumber(y_min)}│"
         linestring += "".join(["#" if value > y_min else "·" for value in graphdict.values()]) + f"\n"
         feedback.setProgress((100 / y_bins) * (y_i + 1))
+        if feedback.isCanceled(): raise QgsProcessingException("Canceled")
     
     #All this.. just for the x-axis ~>.<~
     x_pad = len(graphdict.keys()) + 1 + (len(PrettyNumber(minValue, 3)) % 2) - len(PrettyNumber(minValue, 3) + PrettyNumber(maxValue)) + (len(PrettyNumber(maxValue, 3)) // 2)
@@ -571,7 +571,8 @@ class VectorProcessing(BaseLayerProcesser):
         return  self.run(
             "native:fieldcalculator", {
                 'INPUT':"__self__",
-                'FIELD_NAME':field_name,'FIELD_TYPE':field_type,
+                'FIELD_NAME':field_name,
+                'FIELD_TYPE':field_type,
                 'FIELD_LENGTH':field_length,
                 'FIELD_PRECISION':field_precision,
                 'FORMULA':formula,
@@ -579,6 +580,21 @@ class VectorProcessing(BaseLayerProcesser):
             },
             printfeedback=printfeedback
         )
+    def saveFeatures(self, output: str, layer_name: str, datasource_options: str = "", layer_options: str = "", action_on_existing_file: int = 0, printfeedback=True):
+        _return = self.run(
+            "native:savefeatures", {
+                'INPUT':"__self__",
+                'OUTPUT':output,
+                'LAYER_NAME':layer_name,
+                'DATASOURCE_OPTIONS':datasource_options,
+                'LAYER_OPTIONS':layer_options,
+                'ACTION_ON_EXISTING_FILE':action_on_existing_file
+            },
+            printfeedback=printfeedback
+        )
+        if self.context.willLoadLayerOnCompletion(str(_return)):
+            self.context.layerToLoadOnCompletionDetails(str(_return)).name = layer_name
+        return _return
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
@@ -629,7 +645,7 @@ class VectorProcessing(BaseLayerProcesser):
         """
         Cuts overlapping polygons hierarchically within a single layer.\n
         For every features geometry, minus all overlapping feature's geometries, that have a higher hierarchy value, from the current features geometry.\n
-        :param hierarchyfield: the numerical layer field which are used as the hierarchy values. Higher value -> higher cutting priority.
+        :param hierarchyfield: the numerical layer field which is used as the hierarchy values. Higher value -> higher cutting priority.
         :return: VectorProcessing(FlexibleVectorLayer) Object
         """
 
@@ -641,6 +657,7 @@ class VectorProcessing(BaseLayerProcesser):
         cutlayer.setCrs(self.crs())
 
         for feature in self.getFeatures():
+            if self.feedback.isCanceled(): raise QgsProcessingException("Cancelled")
             geom: QgsGeometry = feature.geometry()
             for fid_intersected in featureindex.intersects(geom.boundingBox()):
                 fid_feature: QgsFeature = self.getFeature(fid_intersected)
@@ -1341,8 +1358,8 @@ class RasterProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>>>>>>     Debug Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
     def peak(self, bins: int, y_truncpercent: int = 100, minValue: float | None = None, maxValue: float | None = None, band: int = 1, showTable: bool = False, tabname: str = None):
-        minValue: float = self.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue if minValue is None else minValue
-        maxValue: float = self.dataProvider().bandStatistics(band, QgsRasterBandStats.All).maximumValue if maxValue is None else maxValue
+        minValue: float = self.dataProvider().bandStatistics(band).minimumValue if minValue is None else minValue
+        maxValue: float = self.dataProvider().bandStatistics(band).maximumValue if maxValue is None else maxValue
         binSizes = (maxValue - minValue) / bins
         rasterClone = self.Clone(False)
         rasterClone.dataProvider().setNoDataValue(band, -999) if math.isnan(rasterClone.dataProvider().sourceNoDataValue(band)) else None
@@ -1435,6 +1452,7 @@ class RasterProcessing(BaseLayerProcesser):
         linestring = "\n \n"
         rows = len(dictlist) / columns
         for row in range(int(rows)):
+            if self.feedback.isCanceled(): raise QgsProcessingException("Canceled")
             linestring += "".join([
                  f"({(row * columns) + i + 1}){'·' * (len(str(len(dictlist))) - len(str((row * columns) + i + 1)))}"
                  f"{'·' * (5 - len(PrettyNumber(dictlist[(row * columns) + i][0][0], 3)))}{PrettyNumber(dictlist[(row * columns) + i][0][0], 3)} - "
@@ -1475,7 +1493,7 @@ class RasterProcessing(BaseLayerProcesser):
                 widget.barpalette.setColor(QPalette.ColorRole.Text, Color("#ECECEC"))
                 widget.bar.setPalette(widget.barpalette)
                 widget.bar.setValue(0)
-                widget.bar.setFormat(f"{tabname} Cross-Section")
+                widget.bar.setFormat(f"{self.name()} Cross-Section")
                 newtab = True
             else:
                 feedback.pushWarning("FeedbackWidget initialised without tabs")
@@ -1483,7 +1501,7 @@ class RasterProcessing(BaseLayerProcesser):
         line = QgsGeometry.fromPolylineXY(transect)
         steps = line.length() / resolution
         graphdict = {}
-        _min = self.dataProvider().bandStatistics(band, QgsRasterBandStats.All).minimumValue
+        _min = self.dataProvider().bandStatistics(band).minimumValue
         for step in range(int(steps)):
             stepmin = resolution * step
             stepmid = line.interpolate(stepmin + (resolution / 2)).asPoint()
@@ -1494,6 +1512,7 @@ class RasterProcessing(BaseLayerProcesser):
             graphdict[(stepmin, stepmax)] = elevation
             _max = stepmax
             self.feedback.setProgress((100 / int(steps)) * (step + 1))
+            if self.feedback.isCanceled(): raise QgsProcessingException("Canceled")
         if returndict:
             if not steps.is_integer():
                 remainder = resolution * (steps - int(steps))
@@ -1649,6 +1668,25 @@ class RasterProcessing(BaseLayerProcesser):
             },
             printfeedback=printfeedback
         )
+    def save(self, output: str, name: str):
+        self.setName(name)
+        _return = self.run(
+            "gdal:translate", {
+                'INPUT':"__self__",
+                'TARGET_CRS':None,
+                'NODATA':None,
+                'COPY_SUBDATASETS':False,
+                'CREATION_OPTIONS':None,
+                'EXTRA':'',
+                'DATA_TYPE':0,
+                'OUTPUT':output
+            },
+            printfeedback=False
+        )
+        if self.context.willLoadLayerOnCompletion(str(_return)):
+            self.context.layerToLoadOnCompletionDetails(str(_return)).name = name
+        return _return
+
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>    Custom Processes    <<<<<<<<<<<<<<<<#
@@ -1688,7 +1726,7 @@ class RasterProcessing(BaseLayerProcesser):
         self.feedback.setProgress(64) if printfeedback else None
         GradientMask = Gradient.RasterCalc(["__self__", RasterClone], f' if ( "{RasterClone.name()}@{band}" > {maskvalue}, -999, "{Gradient.name()}@1" ) ', extent, crs=crs, printfeedback=False)
         self.feedback.setProgress(76) if printfeedback else None
-        Gradient_dif = maskvalue - GradientMask.dataProvider().bandStatistics(1, QgsRasterBandStats.All).maximumValue
+        Gradient_dif = maskvalue - GradientMask.dataProvider().bandStatistics(1).maximumValue
         GradientMask_corected = GradientMask.RasterCalc(["__self__"], f' {Gradient_dif} + "{GradientMask.name()}@1" ', extent, crs=crs, printfeedback=False)
         self.feedback.setProgress(88) if printfeedback else None
 

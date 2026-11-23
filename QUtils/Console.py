@@ -10,10 +10,9 @@ from typing import TYPE_CHECKING
 import traceback, sys
 
 from .Widgets import *
-from .Processing import *
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
 #========================================================================================================#
 #--------------------------------------------Python Console----------------------------------------------#
@@ -88,14 +87,18 @@ def createContextAndFeedback(showwidget = True, withtabs = False):
         feedback.widget.show()
     return context, feedback
 
+class PointerString(str):
+    pass
+
 class SelectedLayers(list[QgsMapLayer]):
     def __getitem__(self, index: int) -> PointerString:
+        from .Processing import PointerString
         return PointerString(super().__getitem__(index).id())
 
 def currentLayers(asmap = False) -> SelectedLayers | list[QgsMapLayer]:
     if asmap: return iface.layerTreeView().selectedLayers()
     return SelectedLayers(iface.layerTreeView().selectedLayers())
-def currentLayer(asmap = False):
+def currentLayer(asmap = False) -> PointerString | QgsMapLayer:
     return currentLayers(asmap)[0]
 
 if TYPE_CHECKING:

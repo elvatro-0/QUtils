@@ -7,7 +7,7 @@ from typing import Any, Protocol, TypeVar, Iterable
 from bisect import bisect_left, bisect_right
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
 #========================================================================================================#
 #------------------------------------------------Storage-------------------------------------------------#

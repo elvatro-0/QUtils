@@ -1,7 +1,8 @@
 """
 Custom Qt Widgets to be used in QGIS. \n
 Includes FeedbackWidget which mimics the QGIS processing log but with more features.
-The widget is created when working in the QGIS python console when createContextAndFeedback(showWidget=True) (which is also the defualt).
+The widget is created when working in the QGIS python console when createContextAndFeedback(showWidget=True) (which is also the defualt),
+from the Console module.
 """
 
 from qgis.core import (
@@ -80,11 +81,11 @@ from typing import Any, Literal, Callable
 from bisect import bisect_left
 import re, sys
 
-from .ErrorHandling import QUtilsExceptions
+from .Internal.ErrorHandling import QUtilsExceptions
 from .Storage import *
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
 
 class FeedbackWidget:
@@ -538,6 +539,7 @@ class FeedbackWidget(QWidget):
         self.elapsed.start()
         parent = iface.mainWindow() if parent is None else parent
         super().__init__(parent, Qt.WindowType.Window)
+        self.setMinimumSize(int(1920 * 0.48), int(1080 * 0.48))
         self.resize(iface.mainWindow().size() * 0.6)
         self.setWindowTitle("Processing log")
         self.feedback = feedback
@@ -599,29 +601,29 @@ class FeedbackWidget(QWidget):
         self.iswrap = True
         self._widget = self
         bottom = QHBoxLayout()
-        _bottom = QHBoxLayout()
+        self._bottom = QHBoxLayout()
         bottom.addWidget(self.elapsedappendbutton)
         bottom.addWidget(self.linenumberappendbutton)
         bottom.addWidget(self.bar, 1)
         bottom.addWidget(self.cancelButton)
-        _bottom.addWidget(self.savelog)
-        _bottom.addWidget(self.copytext)
-        _bottom.addWidget(self.clearlog)
-        _bottom.addStretch(1)
-        _bottom.addWidget(self.loading)
-        _bottom.addWidget(self.keybinds)
-        _bottom.addWidget(self.wrapbutton)
+        self._bottom.addWidget(self.savelog)
+        self._bottom.addWidget(self.copytext)
+        self._bottom.addWidget(self.clearlog)
+        self._bottom.addStretch(1)
+        self._bottom.addWidget(self.loading)
+        self._bottom.addWidget(self.keybinds)
+        self._bottom.addWidget(self.wrapbutton)
         self.tabwidget = QWidget()
         page = QVBoxLayout(self.tabwidget) if withtabs else QVBoxLayout(self)
-        logpage = QHBoxLayout()
-        logpage.addWidget(self.log)
-        logpage.addWidget(self.elapsedappend)
-        logpage.addWidget(self.linenumberappend)
+        self.logpage = QHBoxLayout()
+        self.logpage.addWidget(self.log)
+        self.logpage.addWidget(self.elapsedappend)
+        self.logpage.addWidget(self.linenumberappend)
         self.elapsedappend.hide()
         self.linenumberappend.hide()
-        page.addLayout(logpage)
+        page.addLayout(self.logpage)
         page.addLayout(bottom)
-        page.addLayout(_bottom)
+        page.addLayout(self._bottom)
         if withtabs:
             self.tabs = QTabWidget()
             self.tabs.addTab(self.tabwidget, tabname)
@@ -672,7 +674,7 @@ class FeedbackWidget(QWidget):
         feedback.finished.connect(lambda complete: self._setProgress(100, True, not complete))
         self.elapsedappendbutton.clicked.connect(lambda: QTimer.singleShot(0, lambda: self._appendTextToggle(self.elapsedappend)))
         self.linenumberappendbutton.clicked.connect(lambda: QTimer.singleShot(0, lambda: self._appendTextToggle(self.linenumberappend)))
-        self.cancelButton.clicked.connect(feedback.cancel)
+        self.cancelButton.clicked.connect(self.feedback.cancel)
         self.wrapbutton.clicked.connect(self._setWrap)
         self.copytext.clicked.connect(lambda: QApplication.clipboard().setText(self.currentlog.toPlainText()))
         self.clearlog.clicked.connect(self._clearlog)
@@ -855,6 +857,7 @@ class FeedbackWidget(QWidget):
             self._keybindsquery()
     def _closetostartendbuffers(self):
         for startend in (self.toendbuffer, self.tostartbuffer, self.tostartendwidget):
+            if sip.isdeleted(startend): continue
             startend.close()
             startend.deleteLater()
     def _settostartendbuffers(self, instance: FeedbackWidget):
@@ -864,6 +867,7 @@ class FeedbackWidget(QWidget):
         self.tostart = instance.tostart
         self.toend = instance.toend
     def _updatetostartendbuffers(self):
+        if sip.isdeleted(self.toendbuffer) or sip.isdeleted(self.tostartbuffer): return None
         if not isinstance(self.currenttab, FeedbackWidget):
             self.toendbuffer.hide()
             self.tostartbuffer.hide()
@@ -871,6 +875,7 @@ class FeedbackWidget(QWidget):
         self._movetostartendbuffers()
         self._showtostartendbuffers()
     def _showtostartendbuffers(self):
+        if sip.isdeleted(self.toendbuffer) or sip.isdeleted(self.tostartbuffer): return None
         self.toendbuffer.setVisible(self._widget.currentlog.verticalScrollBar().isVisible())
         self.tostartbuffer.setVisible(self._widget.currentlog.verticalScrollBar().isVisible())
         self._movetostartendbuffers()
@@ -886,6 +891,7 @@ class FeedbackWidget(QWidget):
         self._widget.tostartbuffer.move(self._widget.currentlog.mapToGlobal(QPoint(self._widget.currentlog.width() - self._widget.tostartbuffer.width() - 15, self._widget.currentlog.pos().y() - 10)))
         self._widget.tostartendwidget.move(self._widget.currentlog.mapToGlobal(QPoint(self._widget.currentlog.width() - self._widget.tostartendwidget.width() - 10, self._widget.currentlog.height() - self._widget.tostartendwidget.height() - 10)))
     def _updatetostartend(self):
+        if sip.isdeleted(self.toend) or sip.isdeleted(self.tostart): return None
         scrollbar = self._widget.currentlog.verticalScrollBar()
         if (self.toendbuffer.hovered or self.toend.underMouse()) and scrollbar.value() == scrollbar.maximum():
             self.toend.hide()
@@ -1009,7 +1015,7 @@ class FeedbackWidget(QWidget):
         if tab.findline_save:
             self.findline.setText(tab.findline_save)
         cursor = self._widget.currentlog.textCursor()
-        if cursor.selectedText():
+        if cursor.selectedText() and active:
             self.findline.setText(max(cursor.selectedText().split("\u2029"), key=len))
         self.findline.editingFinished.connect(self._findenter)
         self.findclose = QShortcut(QKeySequence.StandardKey.Cancel, self, self._esc)

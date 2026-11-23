@@ -6,9 +6,9 @@
 """
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
-from .Processing import *
+from QUtils.Processing import *
 
 class VectorProcessing_Experimental(VectorProcessing):
 

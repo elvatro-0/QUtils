@@ -33,20 +33,30 @@ ll``````````````¯l6ggggggggggggl`*‡ll‡l````
                     ````````                            """
 #=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=
 
-__author__ = "Roxanne Minerals"
-__version__ = 1.0
+def classFactory(iface):
+    from .Plugin.plugin import QUtilsPlugin
+    return QUtilsPlugin(iface)
 
-import importlib, sys
+__author__ = "Roxanne Minerals"
+__version__ = 1.1
+
+import importlib, sys, os
+from qgis.PyQt.QtGui import QIcon
+from . import Scripts
 
 def reload():
-  for module in ("Storage", "ErrorHandling", "QVariantHook", "Legacy", "Widgets", "Console", "Processing", "ProcessingAlgorithms", "Experimental"):
+  for module in ("Storage", "QVariantHook", "Widgets", "Console", "Processing", "Internal.Experimental"):
     name = f"{__name__}.{module}"
     if name in sys.modules:
       importlib.reload(sys.modules[name])
       globals().update({key: val for key, val in vars(sys.modules[name]).items() if not key.startswith("_")})
+  importlib.reload(Scripts)
+  Scripts.reload()
 
 from .Processing import *
-from .ProcessingAlgorithms import *
+from .Scripts.ScriptHelper import *
+
+QUtilsIcon = QIcon(os.path.join(os.path.dirname(__file__), "QUtils-Icon.png"))
 
 #=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=♡=
 #Repository:

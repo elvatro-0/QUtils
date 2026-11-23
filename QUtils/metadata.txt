@@ -1,0 +1,22 @@
+[general]
+name=QUtils
+qgisMinimumVersion=3.44
+qgisMaximumVersion=4.2
+description=A lightweight, fluent, type-aware processing framework for QGIS map layers.
+about=QUtils is a PyQGIS helper library that provides a fluent interface for running pyQGIS scripts and processing algorithms.  
+	Custom Algorithms are also wrapped as Processing Algorithms for use within the UI!
+	For more info, check out the homepage and README!
+
+version=1.1
+author=Roxanne Minerals
+email=roxanneminerals.business@gmail.com
+
+repository=https://github.com/elvatro-0/QUtils
+tracker=https://github.com/elvatro-0/QUtils/issues
+homepage=https://github.com/elvatro-0/QUtils
+
+tags=processing, python, pyQGIS, vector, raster
+icon=QUtils-Icon.png
+hasProcessingProvider=yes
+experimental=True
+supportsQt6=True

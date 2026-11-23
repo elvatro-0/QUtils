@@ -2,13 +2,13 @@
 Boilerplate generation for processing algorithm scripts.
 """
 
-from qgis.core import Qgis, QgsProcessingParameterNumber
+from qgis.core import Qgis, QgsProcessingParameterNumber, QgsProcessingAlgorithm, QgsApplication
 from pathlib import Path
 from typing import TYPE_CHECKING
 import inspect
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
 #========================================================================================================#
 #----------------------------------------------InstaScript-----------------------------------------------#
@@ -23,7 +23,7 @@ import QUtils
 QUtils.reload()
 from QUtils import *
 
-_InstaImports({repr(str(file))})
+InstaImports({repr(str(file))})
 
 class InstaScript(QgsProcessingAlgorithm):
     QUtils.reload()

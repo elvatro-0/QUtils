@@ -16,7 +16,7 @@ from typing import Union
 from .ErrorHandling import QUtilsExceptions
 
 __author__ = "Roxanne Minerals"
-__version__ = 1.0
+__version__ = 1.1
 
 #and if your using some random, niche backend provider that doesn't support rewinding of FeatureIterators, then materialise it into a python list.
 #That performance loss is on you for being weird.
@@ -48,7 +48,7 @@ def ListSlicer(input_list: list | QgsFeatureIterator | QgsVectorLayer | QgsMapLa
                     - Note: Exclude ints override include (Include and Range) ints
     :return: Filtered list of objects, QgsFeatureIterator, or QgsVectorLayer
     """
-    from .Processing import (
+    from QUtils.Processing import (
         FlexibleMapLayer,
         BaseLayerProcesser,
         VectorProcessing,
