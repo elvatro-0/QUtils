@@ -187,10 +187,12 @@ class CrossSectionWidget(ParameterWidget):
         self.resolution.setToolTip("Size of each Step")
         self.graphheight = SpinBox(29, 1, 999999)
         self.graphheight.setDecimals(0)
+        self.miny = SpinBox(0, -999999, 999999)
         self.box.addRow("Band", self.band)
         self.box.addRow("Transect", self.transect)
         self.box.addRow("Resolution", self.resolution)
         self.box.addRow("Graph Height", self.graphheight)
+        self.box.addRow("Minimum Elevation", self.miny)
         self.box.addRow("Tab Name", self.tabname)
         self.box.addRow(self.collapsebox)
 
@@ -203,13 +205,16 @@ class CrossSectionWidget(ParameterWidget):
         transectfeature = VectorProcessing(self.transect.currentLayer().id(), context, feedback).Feature()
         if not transectfeature:
             return ReportError("Transect is empty", feedback)
-        transect = transectfeature.geometry().asPolyline()
+        geom = transectfeature.geometry()
+        geom.convertToSingleType()
+        transect = geom.asPolyline()
         resolution = self.resolution.value()
         band = self.band.currentBand()
         graphheight = int(self.graphheight.value())
+        miny = self.miny.value()
         tabname = self.tabname.text()
         if not tabname: tabname = "Cross Section"
-        RasterProcessing(layer.id(), context, feedback).topographicCrossSection(transect, resolution, band, graphheight, tabname=tabname)
+        RasterProcessing(layer.id(), context, feedback).topographicCrossSection(transect, resolution, band, graphheight, miny, tabname=tabname)
 
 
 
@@ -261,11 +266,11 @@ class AsciiWidget(FeedbackWidget):
         self.toendbuffer.setWindowOpacity(0)
 
         self.cancelButton.clicked.connect(lambda: QTimer.singleShot(0, self.newFeedback))
+        sys.excepthook = self.sysexcepthook
 
     def newFeedback(self):
         self.feedback = Feedback()
         self.feedback.widget = self
-        sys.excepthook = self.feedback.exception
         self.context.setFeedback(self.feedback)
         self.feedback.messageLogged.connect(self.appendMessage)
         self.feedback.progressChanged.connect(self._setProgress)
@@ -316,7 +321,9 @@ class AsciiWidgetButton(QAction):
         self.hidden = True
     
     def hideShowWidget(self):
-        if self.hidden:
+        if self.widget is not None and self.widget.isMinimized():
+            self.widget.showNormal()
+        elif self.hidden:
             if self.widget is None:
                 self.widget = AsciiWidget(self.iface)
                 self.widget.closed.connect(lambda: (setattr(self, "widget", None), setattr(self, "hidden", True)))
