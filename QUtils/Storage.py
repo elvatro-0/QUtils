@@ -51,9 +51,6 @@ class SupportsAppend(Protocol[_generic]):
 class SupportsStr(Protocol[_generic]):
     def __str__(self) -> str: ...
 
-class RasterProcessing:
-    pass
-
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>>>>>    Functions   <<<<<<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#

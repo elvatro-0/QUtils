@@ -1481,7 +1481,7 @@ class RasterProcessing(BaseLayerProcesser):
     #>>>>>>>>>>>>>>>>     Layer Methods     <<<<<<<<<<<<<<<<#
     #-------------------------------------------------------#
 
-    def topographicCrossSection(self, transect: Iterable[QgsPointXY], resolution: float, band: int = 1, graphheight: int = 29, minY: float = 0, returndict = False, tabname: str = None) -> dict[tuple[float, float], float] | RasterProcessing:
+    def topographicCrossSection(self, transect: Iterable[QgsPointXY], resolution: float, band: int = 1, graphheight: int = 29, minY: float = None, returndict = False, tabname: str = None):
         feedback: Feedback = self.feedback
         newtab = False
         if isinstance(tabname, str) and hasattr(feedback, "widget"):
