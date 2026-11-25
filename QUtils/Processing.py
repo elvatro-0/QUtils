@@ -397,6 +397,11 @@ class BaseLayerProcesser(FlexibleMapLayer):
 #==========================================> OH YEAH!!! <================================================#
 
 class VectorProcessing(BaseLayerProcesser):
+    @QUtilsExceptions.ErrorHandling
+    def __init__(self, input_pointer, context, feedback):
+        super().__init__(input_pointer, context, feedback)
+        if not isinstance(self, QgsVectorLayer):
+            QUtilsExceptions.CriticalError("Input is not a vector!")
 
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>>     Debug Methods     <<<<<<<<<<<<<<<<#
@@ -1353,6 +1358,11 @@ mNextFeatureId = {}
 #===============================================>      <=================================================#
 
 class RasterProcessing(BaseLayerProcesser):
+    @QUtilsExceptions.ErrorHandling
+    def __init__(self, input_pointer, context, feedback):
+        super().__init__(input_pointer, context, feedback)
+        if not isinstance(self, QgsRasterLayer):
+            QUtilsExceptions.CriticalError("Input is not a raster!")
     
     #-------------------------------------------------------#
     #>>>>>>>>>>>>>>>>     Debug Methods     <<<<<<<<<<<<<<<<#

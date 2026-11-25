@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 from qgis.gui import QgsMapLayerComboBox, QgsDoubleSpinBox, QgsRasterBandComboBox, QgsCollapsibleGroupBox, QgisInterface
-from qgis.core import Qgis, QgsRasterLayer, QgsSettings
+from qgis.core import Qgis, QgsRasterLayer, QgsSettings, QgsProcessingContext
 from qgis.PyQt.QtWidgets import QAction, QFormLayout, QCheckBox, QTabBar, QComboBox
 if TYPE_CHECKING:
     from PyQt5.QtWidgets import QAction
@@ -44,8 +44,9 @@ class ToMinMax(QVBoxLayout):
         self.addWidget(self.tomin)
 
 class ParameterWidget(QWidget):
-    def __init__(self, layername: str, tabname: str, *args, **kwargs):
+    def __init__(self, layername: str, tabname: str, feedback: Feedback, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.feedback = feedback
         self.box = QFormLayout(self)
         self.box.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.layer = QgsMapLayerComboBox()
@@ -88,12 +89,12 @@ class PeakWidget(rasterParmeterWidget):
         self.y_truncpercent = SpinBox(100, 0, 999)
         self.minmax = QHBoxLayout()
         self.minimum = SpinBox(0, 0)
-        diable = self.layer.currentLayer() is None
+        disable = self.layer.currentLayer() is None
         smallbutton = QSize(int(self.size().width() * 0.04), int(self.size().height() * 0.02))
-        self.min_tominmax = ToMinMax(smallbutton, lambda: self._min_tominmax(0), lambda: self._min_tominmax(1), diable)
+        self.min_tominmax = ToMinMax(smallbutton, lambda: self._min_tominmax(0), lambda: self._min_tominmax(1), disable)
         self.minimum.textChanged.connect(lambda text: self._check_minmaxbuttons())
         self.maximum = SpinBox(100, maximum=100)
-        self.max_tominmax = ToMinMax(smallbutton, lambda: self._max_tominmax(0), lambda: self._max_tominmax(1), diable)
+        self.max_tominmax = ToMinMax(smallbutton, lambda: self._max_tominmax(0), lambda: self._max_tominmax(1), disable)
         self.maximum.textChanged.connect(lambda text: self._check_minmaxbuttons())
         self.minmax.addWidget(self.minimum)
         self.minmax.addLayout(self.min_tominmax)
@@ -164,21 +165,21 @@ class PeakWidget(rasterParmeterWidget):
         self.layermin = stats.minimumValue
         self.layermax = stats.maximumValue
 
-    def run(self, context, feedback: Feedback):
+    def run(self, context):
         if self.layer.currentLayer() is None:
-            return ReportError("No Raster Layer Selected", feedback)
+            return ReportError("No Raster Layer Selected", self.feedback)
         layer = self.layer.currentLayer()
         bins = int(self.bins.value())
         y_truncpercent = self.y_truncpercent.value()
         minValue = self.minimum.value()
         maxValue = self.maximum.value()
         if minValue == maxValue:
-            return ReportError("Min and Max value are the same.", feedback)
+            return ReportError("Min and Max value are the same.", self.feedback)
         band = self.band.currentBand()
         showTable = self.showtable.isChecked()
         tabname = self.tabname.text()
         if not tabname: tabname = "Histogram"
-        RasterProcessing(layer.id(), context, feedback).peak(bins, y_truncpercent, minValue, maxValue, band, showTable, tabname)
+        RasterProcessing(layer.id(), context, self.feedback).peak(bins, y_truncpercent, minValue, maxValue, band, showTable, tabname)
 
 class CrossSectionWidget(rasterParmeterWidget):
     def __init__(self, *args, **kwargs):
@@ -188,17 +189,33 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.transect.setExcludedProviders(["wms"])
         self.transect.setFilters(Qgis.LayerFilter.LineLayer)
         self.transect.setToolTip("Takes first feature")
+        self.autoformat = QHBoxLayout()
+        buttonsize = QSize(int(self.size().width() * 0.035), int(self.size().width() * 0.035))
+        self.autoformat_button = PushButton(buttonsize, icon=QgsApplication.getThemeIcon("/mActionElevationProfile.svg"), tooltip="Auto Format (set 1:1 scale)")
+        self.autoformat_button.pressed.connect(self._autoFormat)
         self.resolution = SpinBox(2, 1, 999999)
         self.resolution.setDecimals(0)
         self.resolution.setToolTip("Size of each Step (map units)")
+        self.autoformat.addWidget(self.resolution)
+        self.autoformat.addWidget(self.autoformat_button)
         self.graphheight = SpinBox(29, 1, 999999)
         self.graphheight.setDecimals(0)
+        self.minybox = QHBoxLayout()
         self.miny = SpinBox(0, -999999, 999999)
+        self.miny.setToolTip("Minimum Elevation")
+        self.miny.textChanged.connect(self._disableMinYButtons)
+        smallbuttonsize = QSize(int(self.size().width() * 0.04), int(self.size().height() * 0.02))
+        disable = self.layer.currentLayer() is None
+        self.miny_button = ToMinMax(smallbuttonsize, lambda: (self.miny.setValue(0), self._disableMinYButtons()), self._syncLayer, disable)
+        self.miny_button.tomax.setToolTip("To Layer Min")
+        self.miny_button.tomin.setToolTip("To Zero")
+        self.minybox.addWidget(self.miny)
+        self.minybox.addLayout(self.miny_button)
         self.box.addRow("Band", self.band)
         self.box.addRow("Transect", self.transect)
-        self.box.addRow("Resolution", self.resolution)
+        self.box.addRow("Resolution", self.autoformat)
         self.box.addRow("Graph Height", self.graphheight)
-        self.box.addRow("Minimum Elevation", self.miny)
+        self.box.addRow("Minimum Elevation", self.minybox)
         self.box.addRow("Tab Name", self.tabname)
         self.box.addRow(self.collapsebox)
         self._syncLayer()
@@ -207,17 +224,30 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.miny.setValue(0)
         if self.layer.currentLayer() is not None:
             self.miny.setValue(self.layer.currentLayer().dataProvider().bandStatistics(self.band.currentBand()).minimumValue)
+            self._disableMinYButtons()
 
-
-    def run(self, context, feedback: Feedback):
+    def _disableMinYButtons(self):
         if self.layer.currentLayer() is None:
-            return ReportError("No Raster Layer Selected", feedback)
+            self.miny_button.tomin.setDisabled(True)
+            self.miny_button.tomax.setDisabled(True)
+            return None
+        self.miny_button.tomin.setDisabled(self.miny.value() == 0)
+        self.miny_button.tomax.setDisabled(self.miny.value() == round(self.layer.currentLayer().dataProvider().bandStatistics(self.band.currentBand()).minimumValue, 3))
+
+    def _autoFormat(self):
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        self.run(context, True)
+
+    def run(self, context, autoformat = False):
+        if self.layer.currentLayer() is None:
+            return ReportError("No Raster Layer Selected", self.feedback)
         if self.transect.currentLayer() is None:
-            return ReportError("No Transect Layer Selected", feedback)
+            return ReportError("No Transect Layer Selected", self.feedback)
         layer = self.layer.currentLayer()
-        transectfeature = VectorProcessing(self.transect.currentLayer().id(), context, feedback).Feature()
+        transectfeature = VectorProcessing(self.transect.currentLayer().id(), context, self.feedback).Feature()
         if not transectfeature:
-            return ReportError("Transect is empty", feedback)
+            return ReportError("Transect is empty", self.feedback)
         geom = transectfeature.geometry()
         geom.convertToSingleType()
         transect = geom.asPolyline()
@@ -227,7 +257,14 @@ class CrossSectionWidget(rasterParmeterWidget):
         miny = self.miny.value()
         tabname = self.tabname.text()
         if not tabname: tabname = "Cross Section"
-        RasterProcessing(layer.id(), context, feedback).topographicCrossSection(transect, resolution, band, graphheight, miny, tabname=tabname)
+        feedback = self.feedback
+        if autoformat:
+            feedback = QgsProcessingFeedback()
+        topodict = RasterProcessing(layer.id(), context, feedback).topographicCrossSection(transect, resolution, band, graphheight, miny, autoformat, tabname)
+        if autoformat:
+            maxsum = max(topodict.values())
+            size = (maxsum - miny) / self.resolution.value()
+            self.graphheight.setValue(size)
 
 
 
@@ -251,8 +288,8 @@ class AsciiWidget(FeedbackWidget):
         self.runbutton = PushButton(QSize(int(self.size().width() * 0.07), int(self.size().height() * 0.04)), "Run")
         self.runbutton.clicked.connect(self.run)
 
-        self.peakwidget = PeakWidget()
-        self.crosssectionwidget = CrossSectionWidget()
+        self.peakwidget = PeakWidget(self.feedback)
+        self.crosssectionwidget = CrossSectionWidget(self.feedback)
         self.asciiwidgets = [self.crosssectionwidget, self.peakwidget]
         self.currentasciiwidget = self.crosssectionwidget
         self.log = self.crosssectionwidget.log
@@ -264,6 +301,9 @@ class AsciiWidget(FeedbackWidget):
         self.asciipicker = QComboBox()
         self.asciipicker.addItems(["Cross Section", "Histogram"])
         self.asciipicker.currentIndexChanged.connect(self._switchAscii)
+        self.rendering = QLabel("Rendering...")
+        self.rendering.hide()
+        self._bottom.addWidget(self.rendering)
         self._bottom.addWidget(self.asciipicker)
         self._bottom.addWidget(self.runbutton)
         
@@ -278,13 +318,25 @@ class AsciiWidget(FeedbackWidget):
         self.toendbuffer = paintedSimpleInfoWidget(self, flags=Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.toendbuffer.setWindowOpacity(0)
 
-        self.cancelButton.clicked.connect(lambda: QTimer.singleShot(0, self.newFeedback))
+        self.cancelButton.clicked.connect(lambda: QTimer.singleShot(0, self._cancel))
+        self.feedback.finished.connect(lambda success: QTimer.singleShot(0, lambda: self.newFeedback() if not success else None))
         sys.excepthook = self.sysexcepthook
+        self.running = False
+
+    def _cancel(self):
+        if not self.running:
+            return None
+        self._setProgress(100, True, True)
+        print("Canceled")
+        self.feedback.reportError("Canceled", True)
+        self.newFeedback()
 
     def newFeedback(self):
         self.feedback = Feedback()
         self.feedback.widget = self
         self.context.setFeedback(self.feedback)
+        for widget in self.asciiwidgets:
+            widget.feedback = self.feedback
         self.feedback.messageLogged.connect(self.appendMessage)
         self.feedback.progressChanged.connect(self._setProgress)
         self.feedback.finished.connect(lambda complete: self._setProgress(100, True, not complete))
@@ -298,7 +350,11 @@ class AsciiWidget(FeedbackWidget):
         self.log = self.currentasciiwidget.log
 
     def run(self):
-        self.currentasciiwidget.run(self.context, self.feedback)
+        self.running = True
+        self.rendering.show()
+        self.currentasciiwidget.run(self.context)
+        self.rendering.hide()
+        self.running = False
 
     def addTab(self, tab, name = None):
         super().addTab(tab, name)
