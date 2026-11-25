@@ -1,11 +1,11 @@
 from qgis.gui import QgsMapLayerComboBox, QgsDoubleSpinBox, QgsRasterBandComboBox, QgsCollapsibleGroupBox, QgisInterface
-from qgis.core import Qgis, QgsRasterLayer, QgsSettings, QgsProcessingContext
+from qgis.core import Qgis, QgsRasterLayer, QgsSettings, QgsProcessingContext, QgsVectorLayer
 from qgis.PyQt.QtWidgets import QAction, QFormLayout, QCheckBox, QTabBar, QComboBox
 
 from QUtils import QUtilsIcon
 from QUtils.Widgets import *
 from QUtils.Console import Feedback, createContextAndFeedback
-from QUtils.Processing import RasterProcessing, VectorProcessing
+from QUtils.Processing import RasterProcessing, VectorProcessing, FeatureProcessing
 
 __author__ = "Roxanne Minerals"
 __version__ = 1.1
@@ -71,8 +71,6 @@ class rasterParmeterWidget(ParameterWidget):
     def _sync(self):
         self.band.setLayer(self.layer.currentLayer())
         self.synclayer()
-
-    
 
 class PeakWidget(rasterParmeterWidget):
     def __init__(self, *args, **kwargs):
@@ -186,6 +184,7 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.transect.setExcludedProviders(["wms"])
         self.transect.setFilters(Qgis.LayerFilter.LineLayer)
         self.transect.setToolTip("Takes first feature")
+        self.transect.layerChanged.connect(self._syncLayer)
         self.autoformat = QHBoxLayout()
         buttonsize = QSize(int(self.size().width() * 0.035), int(self.size().width() * 0.035))
         self.autoformat_button = PushButton(buttonsize, icon=QgsApplication.getThemeIcon("/mActionElevationProfile.svg"), tooltip="Auto Scale (set 1:1)")
@@ -203,7 +202,7 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.miny.textChanged.connect(self._disableMinYButtons)
         smallbuttonsize = QSize(int(self.size().width() * 0.04), int(self.size().height() * 0.02))
         disable = self.layer.currentLayer() is None
-        self.miny_button = ToMinMax(smallbuttonsize, lambda: (self.miny.setValue(0), self._disableMinYButtons()), self._syncLayer, disable)
+        self.miny_button = ToMinMax(smallbuttonsize, lambda: (self.miny.setValue(0), self._disableMinYButtons()), self._autoMin, disable)
         self.miny_button.tomax.setToolTip("To Layer Min")
         self.miny_button.tomin.setToolTip("To Zero")
         self.minybox.addWidget(self.miny)
@@ -215,13 +214,26 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.box.addRow("Minimum Elevation", self.minybox)
         self.box.addRow("Tab Name", self.tabname)
         self.box.addRow(self.collapsebox)
-        self._syncLayer()
+        self.layermin = 0
+        self.transects = []
+        self._syncLayer(False)
 
-    def _syncLayer(self):
-        self.miny.setValue(0)
+    def _connectTransect(self):
+        self.automin_set = False
+        layer: QgsVectorLayer = self.transect.currentLayer()
+        if layer is None:
+            return None
+        if layer.id() not in self.transects:
+            layer.featureAdded.connect(self._featureChanged)
+            layer.featureDeleted.connect(self._featureChanged)
+            self.transects.append(layer.id())
+
+    def _syncLayer(self, noset = True):
+        self._connectTransect()
+        self.automin = self.layermin
         if self.layer.currentLayer() is not None:
-            self.miny.setValue(self.layer.currentLayer().dataProvider().bandStatistics(self.band.currentBand()).minimumValue)
-            self._disableMinYButtons()
+            self.layermin: float = self.layer.currentLayer().dataProvider().bandStatistics(self.band.currentBand()).minimumValue
+            self._autoMin(noset)
 
     def _disableMinYButtons(self):
         if self.layer.currentLayer() is None:
@@ -229,14 +241,50 @@ class CrossSectionWidget(rasterParmeterWidget):
             self.miny_button.tomax.setDisabled(True)
             return None
         self.miny_button.tomin.setDisabled(self.miny.value() == 0)
-        self.miny_button.tomax.setDisabled(self.miny.value() == round(self.layer.currentLayer().dataProvider().bandStatistics(self.band.currentBand()).minimumValue, 3))
+        self.miny_button.tomax.setDisabled(self.miny.value() == round(self.automin, 3))
+
+    def _featureChanged(self):
+        if self.transect.currentLayer().featureCount() <= 1:
+            self.automin_set = False
+            self._autoMin(True)
+
+    def _autoMin(self, noset = False):
+        if self.automin_set:
+            if not noset: self.miny.setValue(self.automin)
+            self._disableMinYButtons()
+            return None
+        if not noset: self.miny.setValue(0)
+        self.automin = self.layermin
+        if self.transect.currentLayer() is None:
+            if not noset: self.miny.setValue(self.layermin)
+            self._disableMinYButtons()
+            return None
+        elif not self.transect.currentLayer().featureCount():
+            if not noset: self.miny.setValue(self.layermin)
+            self._disableMinYButtons()
+            return None
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        topodict = self.run(context, True)
+        if topodict is None:
+            return None
+        _min: float = min(topodict.values())
+        if not noset: self.miny.setValue(_min)
+        self.automin = _min
+        self.automin_set = True
+        self._disableMinYButtons()
 
     def _autoFormat(self):
         context = QgsProcessingContext()
         context.setProject(QgsProject.instance())
-        self.run(context, True)
+        topodict = self.run(context, True, 1)
+        if topodict is None:
+            return None
+        maxsum = max(topodict.values())
+        size = (maxsum - self.miny.value()) / self.resolution.value()
+        self.graphheight.setValue(size)
 
-    def run(self, context, autoformat = False):
+    def run(self, context, autoformat = False, resolution = None):
         if self.layer.currentLayer() is None:
             return ReportError("No Raster Layer Selected", self.feedback)
         if self.transect.currentLayer() is None:
@@ -248,7 +296,8 @@ class CrossSectionWidget(rasterParmeterWidget):
         geom = transectfeature.geometry()
         geom.convertToSingleType()
         transect = geom.asPolyline()
-        resolution = self.resolution.value()
+        if resolution is None:
+            resolution = self.resolution.value()
         band = self.band.currentBand()
         graphheight = int(self.graphheight.value())
         miny = self.miny.value()
@@ -257,13 +306,7 @@ class CrossSectionWidget(rasterParmeterWidget):
         feedback = self.feedback
         if autoformat:
             feedback = QgsProcessingFeedback()
-        topodict = RasterProcessing(layer.id(), context, feedback).topographicCrossSection(transect, resolution, band, graphheight, miny, autoformat, tabname)
-        if autoformat:
-            maxsum = max(topodict.values())
-            size = (maxsum - miny) / self.resolution.value()
-            self.graphheight.setValue(size)
-
-
+        return RasterProcessing(layer.id(), context, feedback).topographicCrossSection(transect, resolution, band, graphheight, miny, autoformat, tabname)
 
 class AsciiWidget(FeedbackWidget):
     closed = pyqtSignal()
