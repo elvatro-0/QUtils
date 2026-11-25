@@ -1788,7 +1788,7 @@ if TYPE_CHECKING:
 
 try: installPointerString(PointerString)
 except Exception as exc:
-    QgsMessageLog.logMessage(f"PointerString failed to hook, call str(obj) or obj.id() when pointer string is needed. {exc}", "QUtils", Qgis.Warning)
+    QgsMessageLog.logMessage(message=f"PointerString failed to hook, call str(obj) or obj.id() when pointer string is needed. {exc}", tag="QUtils", level=Qgis.Warning)
 
 
 #                    ↓↓ what pyQGIS does to a girl ↓↓

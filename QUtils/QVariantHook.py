@@ -94,8 +94,7 @@ def _warnOnce(state: _State, tp: type, exc: BaseException):
     if not isinstance(exc, Exception) or tp in state.warned:
         return
     state.warned.add(tp)
-    try: core.QgsMessageLog.logMessage(f"QVariant converter for {tp.__name__} failed ({exc!r}); passing it to Qt unconverted.", "QUtils", core.Qgis.Warning)
-    except Exception: pass
+    core.QgsMessageLog.logMessage(message=f"QVariant converter for {tp.__name__} failed ({exc!r}); passing it to Qt unconverted.", tag="QUtils", level=core.Qgis.Warning)
 
 def _makeDispatch(state: _State, size: int):
 

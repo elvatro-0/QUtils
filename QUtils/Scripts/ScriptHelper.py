@@ -2,7 +2,7 @@
 Boilerplate generation for processing algorithm scripts.
 """
 
-from qgis.core import Qgis, QgsProcessingParameterNumber, QgsProcessingAlgorithm, QgsApplication
+from qgis.core import Qgis, QgsProcessingParameterNumber
 from pathlib import Path
 from typing import TYPE_CHECKING
 import inspect
@@ -116,8 +116,8 @@ class ProcessingSourceType:
     TiledScene = Qgis.ProcessingSourceType.TiledScene
 
 class NumberType:
-    Integer = QgsProcessingParameterNumber.Integer
-    Double = QgsProcessingParameterNumber.Double
+    Integer = QgsProcessingParameterNumber.Type.Integer
+    Double = QgsProcessingParameterNumber.Type.Double
 
 if TYPE_CHECKING:
     from qgis.core import(

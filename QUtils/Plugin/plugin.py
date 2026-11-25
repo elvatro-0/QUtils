@@ -1,9 +1,6 @@
-from typing import TYPE_CHECKING
 from qgis.core import QgsApplication, QgsSettings
 from qgis.gui import QgisInterface
 from qgis.PyQt.QtWidgets import QAction, QMenu
-if TYPE_CHECKING:
-    from PyQt5.QtWidgets import QAction
 from .provider import QUtilsProvider
 from .ui import AsciiWidgetButton
 from QUtils import QUtilsIcon

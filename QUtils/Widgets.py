@@ -1087,7 +1087,7 @@ class FeedbackWidget(QWidget):
                 findkey.deleteLater()
             for connection in (self._widget.log.selectionChanged, self._widget.elapsedappend.selectionChanged, self._widget.linenumberappend.selectionChanged, self._widget.highlight.finishCount):
                 try: connection.disconnect(self._updatecursorcount)
-                except: pass
+                except: "No disconnect to make... ~o.o~"
             self.findwidget_insnap = self.findwidget.insnap
             self.findwidget.close()
             self.findwidget.deleteLater()

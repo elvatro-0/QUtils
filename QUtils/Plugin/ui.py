@@ -1,9 +1,6 @@
-from typing import TYPE_CHECKING
 from qgis.gui import QgsMapLayerComboBox, QgsDoubleSpinBox, QgsRasterBandComboBox, QgsCollapsibleGroupBox, QgisInterface
 from qgis.core import Qgis, QgsRasterLayer, QgsSettings, QgsProcessingContext
 from qgis.PyQt.QtWidgets import QAction, QFormLayout, QCheckBox, QTabBar, QComboBox
-if TYPE_CHECKING:
-    from PyQt5.QtWidgets import QAction
 
 from QUtils import QUtilsIcon
 from QUtils.Widgets import *
@@ -191,7 +188,7 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.transect.setToolTip("Takes first feature")
         self.autoformat = QHBoxLayout()
         buttonsize = QSize(int(self.size().width() * 0.035), int(self.size().width() * 0.035))
-        self.autoformat_button = PushButton(buttonsize, icon=QgsApplication.getThemeIcon("/mActionElevationProfile.svg"), tooltip="Auto Format (set 1:1 scale)")
+        self.autoformat_button = PushButton(buttonsize, icon=QgsApplication.getThemeIcon("/mActionElevationProfile.svg"), tooltip="Auto Scale (set 1:1)")
         self.autoformat_button.pressed.connect(self._autoFormat)
         self.resolution = SpinBox(2, 1, 999999)
         self.resolution.setDecimals(0)
