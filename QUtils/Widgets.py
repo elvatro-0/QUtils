@@ -1190,6 +1190,19 @@ class FeedbackWidget(QWidget):
                     self.HLcountbox.setFocus()
 
     #>>>Find Widget Event Syncronisation<<<
+    def hide(self):
+        if getattr(self, "findwidget", None) is not None:
+            self.findwidget.hide()
+        return super().hide()
+    def show(self):
+        if getattr(self, "findwidget", None) is not None:
+            self.findwidget.show()
+        return super().show()
+    def setVisible(self, visible):
+        if getattr(self, "findwidget", None) is not None:
+            self.findwidget.setVisible(visible)
+        return super().setVisible(visible)
+
     def closeEvent(self, a0):
         if not self.feedback.isfinished and not self.forceclose:
             self._createAYSwidget()
