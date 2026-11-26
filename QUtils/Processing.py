@@ -174,7 +174,8 @@ def CloneLayer(layer: QgsMapLayer | QgsVectorLayer | QgsRasterLayer | str, conte
     return clone
 
 def PrettyNumber(number: int | float, ndigits: int = 3) -> str:
-    number = round(number) + 0.0 if abs(number) >= (1000 - 5 * 10 ** (2 - ndigits)) else number + 0.0
+    number = round(number) + 0.0 if (1000 - 5 * 10 ** (2 - ndigits)) <= abs(number) < 1000 else number + 0.0
+    number = round(number, ndigits - len(str(round(abs(number))))) + 0.0 if len(str(round(abs(number)))) > ndigits else number
     letter = ("", 1)
     letter = ("k", 10 ** 3) if abs(number) >= 1000 else letter
     letter = ("m", 10 ** 6) if abs(number) >= 1_000_000 else letter
@@ -182,7 +183,7 @@ def PrettyNumber(number: int | float, ndigits: int = 3) -> str:
     letter = ("T", 10 ** 12) if abs(number) >= 10 ** 12 else letter
     trunc_numb: float = (
         round(number / letter[1], ndigits - len(str(int(abs(number) / letter[1]))))
-        if len(str(int(abs(number)))) >= ndigits else round(number, ndigits - len(str(int(abs(number)))))
+        if len(str(int(abs(number)))) >= ndigits or letter[1] > 1 else round(number, ndigits - len(str(int(abs(number)))))
         )
     trunc_numb = int(trunc_numb) if trunc_numb.is_integer() and len(str(int(abs(trunc_numb)))) >= ndigits else trunc_numb
     return f"{number:.{ndigits - 1}e}" if abs(number) >= 10 ** 15 else f'{trunc_numb}{"0" * (ndigits - len(str(abs(trunc_numb)).replace(".", "")))}{letter[0]}'
