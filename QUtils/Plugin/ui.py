@@ -226,6 +226,7 @@ class CrossSectionWidget(rasterParmeterWidget):
         if layer.id() not in self.transects:
             layer.featureAdded.connect(self._featureChanged)
             layer.featureDeleted.connect(self._featureChanged)
+            layer.geometryChanged.connect(lambda: self._featureChanged(True))
             self.transects.append(layer.id())
 
     def _syncLayer(self, noset = True):
@@ -243,10 +244,11 @@ class CrossSectionWidget(rasterParmeterWidget):
         self.miny_button.tomin.setDisabled(self.miny.value() == 0)
         self.miny_button.tomax.setDisabled(self.miny.value() == round(self.automin, 3))
 
-    def _featureChanged(self):
-        if self.transect.currentLayer().featureCount() <= 1:
+    def _featureChanged(self, change = False):
+        if self.transect.currentLayer().featureCount() <= 1 or change:
             self.automin_set = False
-            self._autoMin(True)
+            if self.layer.currentLayer() is not None:
+                self._autoMin(True)
 
     def _autoMin(self, noset = False):
         if self.automin_set:
@@ -265,7 +267,7 @@ class CrossSectionWidget(rasterParmeterWidget):
             return None
         context = QgsProcessingContext()
         context.setProject(QgsProject.instance())
-        topodict = self.run(context, True)
+        topodict = self.run(context, True, 1)
         if topodict is None:
             return None
         _min: float = min(topodict.values())
@@ -402,8 +404,13 @@ class AsciiWidget(FeedbackWidget):
         buttonsize = int(self.tabs.tabBar().height() * 0.5)
         closebutton = ToolButton(QSize(buttonsize, buttonsize), icon=closeIcon(colour))
         self.tabs.tabBar().setTabButton(self.tabs.indexOf(tab), QTabBar.ButtonPosition.RightSide, closebutton)
-        closebutton.clicked.connect(lambda: self.tabs.removeTab(self.tabs.indexOf(tab)))
+        closebutton.clicked.connect(lambda: self._closeTab(tab))
         QTimer.singleShot(0, lambda: self.tabs.setCurrentIndex(self.tabs.indexOf(tab)))
+
+    def _closeTab(self, tab):
+        if getattr(self, "findwidget", None) is not None:
+            self._closefind()
+        self.tabs.removeTab(self.tabs.indexOf(tab))
 
     def _updatetabs(self):
         super()._updatetabs()
