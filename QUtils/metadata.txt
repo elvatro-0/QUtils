@@ -18,5 +18,3 @@ homepage=https://github.com/elvatro-0/QUtils
 tags=processing, python, pyQGIS, vector, raster
 icon=QUtils-Icon.png
 hasProcessingProvider=yes
-experimental=True
-supportsQt6=True
